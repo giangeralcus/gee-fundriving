@@ -6,6 +6,22 @@ Simulasi nyetir 2D top-down: **1 mobil autonomous** keliling sirkuit dengan *Sys
 
 ![gameplay](docs/demo.png)
 
+## Versi web (baru! — Loop City di browser)
+
+```bash
+# cara 1: buka langsung (offline, tanpa server)
+web/index.html                      # dobel-klik
+
+# cara 2: server lokal
+cd web && python -m http.server 8123   # -> http://localhost:8123/
+```
+
+Port JavaScript + Canvas dari versi desktop: fisika 60Hz fixed-step, render
+30/60fps, menu START/SETTINGS/ABOUT/EXIT (setelan di localStorage), assistant
+pure pursuit + ACC + lampu merah, traffic AI, mode misi, dan kendali manual
+(WASD/arrow + `F` ambil-alih). Peta Loop City di-embed (`map_loop_city.js`).
+Tes: `node web/test_headless.js` (logika: mobil jalan, misi selesai).
+
 ## Loop City (default, peta internal — instan & gampang diadaptasi)
 
 Peta ring kota bikinan sendiri: 1 jalan lingkar + 3 jalan cross (6 simpang
@@ -46,7 +62,9 @@ Fitur map mode:
 - **Mode misi**: skor = rute terpendek ÷ rute ditempuh × 1000, −40/lampu merah, −25/tabrakan; selesai → auto misi baru
 - **Lalu lintas**: mobil AI random-walk di graf (lane kanan, jaga jarak, deteksi hero) + lampu lalu lintas siklus 7 detik, nyabrang merah kena denda
 - **Nama jalan** di dekat mobil, pathfinding A* di graf OSM
-- **Kamera follow** + zoom `[-][=]`, `R` misi baru, `ESC` keluar, FPS live di HUD
+- **Main menu**: `python fundriving.py` tanpa argumen → **START / SETTINGS / ABOUT / EXIT**. SETTINGS ngatur mode (assistant / kendali sendiri), peta (Loop City / sirkuit / OSM kalau ada), dan render FPS 30/60 — tersimpan di `~/gee-fundriving/settings.json`. ESC di game balik ke menu; windowed tanpa `--seconds` = main tanpa timer
+- **Bisa dikendarai sendiri**: tekan `F` untuk lepas dari assistant dan kemudikan mobil pakai `WASD`/arrow (`W`/`↑` gas, `S`/`↓` rem, `A`/`D` belok — kemudi di-smooth biar gak jerk). Tekan `F` lagi buat balik ke autopilot. Mulai langsung dari kemudi: `--manual`. Di mode manual kamu yang nyabrang lampu merah (denda tetap masuk) dan nggak ada snap balik ke rute
+- **Kamera follow** + zoom `[-][=]`, `R` misi baru, `F` assistant ON/OFF, `ESC` keluar, FPS live di HUD; render 30fps (fisika tetap 60Hz), rekaman MP4 headless 30fps real-time
 
 Benchmark learning curve: `python tools/benchmark.py` (dua arah Green Sedayu ↔ Puri Indah di peta OSM, atau misi acak di Loop City) — hasil tercatat di `docs/benchmark/history.jsonl`.
 
