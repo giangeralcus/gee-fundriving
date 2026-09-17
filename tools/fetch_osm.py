@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
-"""Fetch jalan + bangunan + area hijau/air daerah Puri Indah (Jakarta Barat)
-dari OpenStreetMap via Overpass API, konversi ke map format Gee-FunDriving.
+"""Fetch jalan + bangunan + area dari OpenStreetMap via Overpass API,
+konversi ke map format Gee-FunDriving.
+
+Pakai:
+  python tools/fetch_osm.py                          # default: Puri Indah -> Cengkareng/Taman Palem
+  python tools/fetch_osm.py --preset puri-indah      # area kecil (cepat)
+  python tools/fetch_osm.py --bbox LAT0 LON0 LAT1 LON1 --name "Daerah X" --out maps/x.json
 
 Output JSON:
 - nodes: {id: (x, y)}    — meter (lokal, origin di bbox corner, utara ke atas)
@@ -8,41 +13,55 @@ Output JSON:
 - buildings: [[[x,y],...], ...]           — poligon bangunan (meter)
 - areas: [{k: green|water, pts:[[x,y],...]}, ...]
 """
+import argparse
 import json
 import math
+import os
 import sys
 import urllib.parse
 import urllib.request
 
-# bbox Puri Indah + sekitarnya (Kembangan, Jakarta Barat)
-LAT0, LON0 = -6.1950, 106.7350   # south, west
-LAT1, LON1 = -6.1800, 106.7550   # north, east
+PRESETS = {
+    "puri-indah": {
+        "bbox": (-6.1950, 106.7350, -6.1800, 106.7550),
+        "name": "Puri Indah, Jakarta Barat",
+        "out": "maps/puri_indah.json",
+    },
+    "puri-cengkareng": {
+        "bbox": (-6.1960, 106.7060, -6.1460, 106.7590),
+        "name": "Puri Indah - Cengkareng - Taman Palem, Jakarta Barat",
+        "out": "maps/puri_cengkareng.json",
+    },
+}
 
-QUERY = f"""[out:json][timeout:120];
+
+def build_query(lat0, lon0, lat1, lon1):
+    return f"""[out:json][timeout:300];
 (
-  way({LAT0},{LON0},{LAT1},{LON1})["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|service)$"];
-  way({LAT0},{LON0},{LAT1},{LON1})["building"];
-  way({LAT0},{LON0},{LAT1},{LON1})["leisure"~"^(park|garden|pitch|playground|golf_course)$"];
-  way({LAT0},{LON0},{LAT1},{LON1})["landuse"~"^(grass|forest|meadow|recreation_ground|cemetery)$"];
-  way({LAT0},{LON0},{LAT1},{LON1})["natural"~"^(water|wood|riverbank)$"];
+  way({lat0},{lon0},{lat1},{lon1})["highway"~"^(motorway|trunk|primary|secondary|tertiary|residential|unclassified|living_street|service)$"];
+  way({lat0},{lon0},{lat1},{lon1})["building"];
+  way({lat0},{lon0},{lat1},{lon1})["leisure"~"^(park|garden|pitch|playground|golf_course)$"];
+  way({lat0},{lon0},{lat1},{lon1})["landuse"~"^(grass|forest|meadow|recreation_ground|cemetery)$"];
+  way({lat0},{lon0},{lat1},{lon1})["natural"~"^(water|wood|riverbank)$"];
 );
 (._;>;);
 out body qt;"""
 
 
-def fetch():
+def fetch(query, timeout=300):
     url = "https://overpass-api.de/api/interpreter"
-    data = urllib.parse.urlencode({"data": QUERY}).encode()
+    data = urllib.parse.urlencode({"data": query}).encode()
     req = urllib.request.Request(url, data=data, headers={"User-Agent": "GeeFunDriving/1.0"})
-    with urllib.request.urlopen(req, timeout=120) as r:
+    with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
 
 
-def latlon_to_xy(lat, lon):
-    """Equirectangular proj ke meter, origin = (LAT1/LON0), y dibalik biar utara ke atas."""
-    mx = math.radians(lon - LON0) * 6378137.0 * math.cos(math.radians((LAT0 + LAT1) / 2))
-    my = math.radians(LAT1 - lat) * 6378137.0
-    return round(mx, 1), round(my, 1)
+def make_proj(lat0, lon0, lat1, lon1):
+    def latlon_to_xy(lat, lon):
+        mx = math.radians(lon - lon0) * 6378137.0 * math.cos(math.radians((lat0 + lat1) / 2))
+        my = math.radians(lat1 - lat) * 6378137.0
+        return round(mx, 1), round(my, 1)
+    return latlon_to_xy
 
 
 HIGHWAY_WIDTH = {
@@ -67,13 +86,27 @@ def area_kind(tags):
 
 
 def main():
-    print("fetch OSM (jalan + bangunan + area)...", file=sys.stderr)
-    data = fetch()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--preset", default="puri-cengkareng", choices=sorted(PRESETS))
+    ap.add_argument("--bbox", nargs=4, type=float, metavar=("LAT0", "LON0", "LAT1", "LON1"))
+    ap.add_argument("--name", default=None)
+    ap.add_argument("--out", default=None)
+    args = ap.parse_args()
+
+    p = PRESETS[args.preset]
+    lat0, lon0, lat1, lon1 = args.bbox if args.bbox else p["bbox"]
+    name = args.name or p.get("name", "Area OSM")
+    out = args.out or p.get("out", "maps/map.json")
+
+    print(f"fetch OSM bbox=({lat0},{lon0},{lat1},{lon1}) -> {out}", file=sys.stderr)
+    data = fetch(build_query(lat0, lon0, lat1, lon1))
+    proj = make_proj(lat0, lon0, lat1, lon1)
+
     nodes = {}
     roads, buildings, areas = [], [], []
     for el in data["elements"]:
         if el["type"] == "node":
-            nodes[el["id"]] = latlon_to_xy(el["lat"], el["lon"])
+            nodes[el["id"]] = proj(el["lat"], el["lon"])
     for el in data["elements"]:
         if el["type"] != "way":
             continue
@@ -92,7 +125,6 @@ def main():
                 "points": pts,
             })
             continue
-        # poligon: bangunan / area (pakai koordinat langsung)
         pts = [nodes[n] for n in node_ids if n in nodes]
         if len(pts) < 3:
             continue
@@ -103,24 +135,20 @@ def main():
         if k:
             areas.append({"k": k, "pts": pts})
     world = {
-        "meta": {
-            "name": "Puri Indah, Jakarta Barat",
-            "source": "OpenStreetMap (ODbL)",
-            "bbox": [LON0, LAT0, LON1, LAT1],
-        },
+        "meta": {"name": name, "source": "OpenStreetMap (ODbL)",
+                 "bbox": [lon0, lat0, lon1, lat1]},
         "nodes": {str(k): v for k, v in nodes.items()},
         "roads": roads,
         "buildings": buildings,
         "areas": areas,
     }
-    import os
-    os.makedirs("maps", exist_ok=True)
-    with open("maps/puri_indah.json", "w") as f:
+    os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    with open(out, "w") as f:
         json.dump(world, f)
     print(f"OK: {len(nodes)} nodes, {len(roads)} roads, "
-          f"{len(buildings)} buildings, {len(areas)} areas -> maps/puri_indah.json")
-    xs = [p[0] for p in nodes.values()]
-    ys = [p[1] for p in nodes.values()]
+          f"{len(buildings)} buildings, {len(areas)} areas -> {out}")
+    xs = [p2[0] for p2 in nodes.values()]
+    ys = [p2[1] for p2 in nodes.values()]
     if xs:
         print(f"extent: {max(xs)-min(xs):.0f}m x {max(ys)-min(ys):.0f}m")
 

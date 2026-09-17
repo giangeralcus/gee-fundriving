@@ -8,6 +8,8 @@ MODE:
                            hijau/air, lampu lalu lintas, mobil AI, nama jalan)
                            + mode misi: antar sampai tujuan, dinilai vs rute
                            terpendek. Kamera ikut mobil.
+                           Koordinat bisa diatur: --start "lat,lon"
+                           --goal "lat,lon" --heading derajat.
                            Keys: [ESC] keluar, [-][=] zoom, [R] misi baru.
 
 Headless: rekam MP4 (butuh ffmpeg).
@@ -18,6 +20,7 @@ import os
 import random
 import subprocess
 import sys
+from collections import OrderedDict
 
 import pygame
 
@@ -165,6 +168,9 @@ def hud(surf, lines):
 
 
 # ---------------------------------------------------------------- OSM map ---
+CELL = 500  # ukuran sel spatial grid (meter) biar render gak terjerat peta raksasa
+
+
 class OSMWorld:
     """Dunia dari OSM: graf jalan + bangunan + area + rute A* buat mobil."""
 
@@ -191,6 +197,25 @@ class OSMWorld:
         self._build_segments(d)
         self._build_polys(d)
         self._build_named_segs(d)
+        self._build_grids()
+
+    def _build_grids(self):
+        """Spatial grid: index elemen per sel 500m biar culling murah."""
+        self.seg_grid = {}
+        for i, (ax, ay, bx, by, _wd, _kind, _k) in enumerate(self.segs):
+            for cx in range(int(min(ax, bx) // CELL), int(max(ax, bx) // CELL) + 1):
+                for cy in range(int(min(ay, by) // CELL), int(max(ay, by) // CELL) + 1):
+                    self.seg_grid.setdefault((cx, cy), []).append(i)
+        self.bldg_grid = {}
+        for i, (bb, _pts) in enumerate(self.buildings):
+            for cx in range(int(bb[0] // CELL), int(bb[2] // CELL) + 1):
+                for cy in range(int(bb[1] // CELL), int(bb[3] // CELL) + 1):
+                    self.bldg_grid.setdefault((cx, cy), []).append(i)
+        self.area_grid = {}
+        for i, (bb, _pts, _k) in enumerate(self.areas):
+            for cx in range(int(bb[0] // CELL), int(bb[2] // CELL) + 1):
+                for cy in range(int(bb[1] // CELL), int(bb[3] // CELL) + 1):
+                    self.area_grid.setdefault((cx, cy), []).append(i)
 
     def _wmin(self, a, b, wd):
         k = (min(a, b), max(a, b))
@@ -473,19 +498,30 @@ class Mission:
         for goal in cands[:12]:
             r = w.route(from_node, goal)
             if len(r) >= 4:
-                self.goal = goal
-                self.route_len = self.route_len_of(r)
-                self.driven = 0.0
-                self.reds = 0
-                self.crashes = 0
-                self.done = False
-                self.red_cd = {}
-                car.route = r
-                car.wp_i = 1
-                car.finished = False
-                car._init_heading()
+                self._set(from_node, goal, r, car)
                 return True
         return False
+
+    def new_fixed(self, from_node, goal_node, car):
+        """Misi dengan tujuan eksplisit (mis. koordinat Taman Palem)."""
+        r = self.world.route(from_node, goal_node)
+        if len(r) < 2:
+            return False
+        self._set(from_node, goal_node, r, car)
+        return True
+
+    def _set(self, from_node, goal, r, car):
+        self.goal = goal
+        self.route_len = self.route_len_of(r)
+        self.driven = 0.0
+        self.reds = 0
+        self.crashes = 0
+        self.done = False
+        self.red_cd = {}
+        car.route = r
+        car.wp_i = 1
+        car.finished = False
+        car._init_heading()
 
     def complete(self, car):
         base = round(self.route_len / max(self.driven, 1.0) * 1000)
@@ -557,11 +593,21 @@ class MapCar:
         cx, cy = ax + abx * tt, ay + aby * tt
         lateral = math.hypot(self.x - cx, self.y - cy)
         hw = w.seg_halfw(self.route[seg_i], self.route[seg_i + 1])
+        # curvature: sudut belokan di depan (wp sekarang -> wp berikut)
+        i2 = min(self.wp_i + 1, len(self.route) - 1)
+        tgt2 = w.nodes[self.route[i2]]
+        d1x, d1y = tgt[0] - self.x, tgt[1] - self.y
+        d2x, d2y = tgt2[0] - tgt[0], tgt2[1] - tgt[1]
+        n1 = math.hypot(d1x, d1y) + 1e-6
+        n2 = math.hypot(d2x, d2y) + 1e-6
+        dot = max(-1.0, min(1.0, (d1x * d2x + d1y * d2y) / (n1 * n2)))
+        curv = math.degrees(math.acos(dot))
         return {
             "lateral": lateral, "halfw": hw,
             "heading_err": heading_err,
             "speed_norm": self.speed / self.MAXV,
             "wp": tgt, "cx": cx, "cy": cy,
+            "curv": curv,
         }
 
     def step(self, steer, thr, brk):
@@ -582,18 +628,43 @@ class MapCar:
 
 
 def map_brain(state):
+    """Brain v2: steering proporsional + ANTISIPASI tikungan (slow-in,
+    fast-out: rem sebelum tikungan berdasar curvature depan) + ACC (jaga
+    jarak dari mobil depan kalau ada state['ahead_gap'])."""
     he = state["heading_err"]
+    curv = state.get("curv", 0.0)
+    gap = state.get("ahead_gap")
     steer = max(-1.0, min(1.0, he / 40.0))
     sharp = abs(he)
+    # antisipasi tikungan: makin tajam, makin pagi ngerem
+    if curv > 65:
+        thr, brk = 0.0, 0.85
+    elif curv > 40:
+        thr, brk = 0.3, 0.0
+    elif curv > 22:
+        thr, brk = 0.7, 0.0
+    else:
+        thr, brk = 1.0, 0.0
+    # heading error tajam tetap menang
     if sharp > 90:
         thr, brk = 0.0, 1.0
     elif sharp > 45:
-        thr, brk = 0.25, 0.0
+        thr, brk = min(thr, 0.25), 0.0
     elif sharp > 20:
-        thr, brk = 0.6, 0.0
-    else:
-        thr, brk = 1.0, 0.0
-    return steer, thr, brk, {"he": he, "lat": state["lateral"]}
+        thr = min(thr, 0.6)
+    # ACC: mobil depan deket -> longgar gas / rem
+    acc = ""
+    if gap is not None:
+        if gap < 12:
+            thr, brk = 0.0, 1.0
+            acc = "REM!"
+        elif gap < 26:
+            thr = 0.0
+            acc = "ikut"
+        elif gap < 45:
+            thr = min(thr, 0.35)
+            acc = "geser"
+    return steer, thr, brk, {"he": he, "lat": state["lateral"], "acc": acc}
 
 
 def largest_component(world):
@@ -644,35 +715,78 @@ COL_ROUTE = (80, 140, 230)
 COL_ROUTE_CASE = (28, 58, 118)
 
 
-def draw_world(surf, world, cam):
-    z = cam.zoom
-    vw = W / z / 2 + 60
-    vh = H / z / 2 + 60
-    x0, x1 = cam.x - vw, cam.x + vw
-    y0, y1 = cam.y - vh, cam.y + vh
+class WorldTiles:
+    """Chunk cache: layer statis kota (area+bangunan+jalan) dirender per tile
+    500m sekali, tiap frame tinggal blit. Bikin peta raksasa tetap 60fps."""
+
+    def __init__(self, world, res=1.5, max_tiles=48):
+        self.world = world
+        self.res = res          # piksel per meter di tile
+        self.max_tiles = max_tiles
+        self.tiles = OrderedDict()
+        self.scaled = OrderedDict()   # (gx,gy,zoom) -> versi ter-scale (zoom jarang berubah)
+
+    def _render(self, gx, gy):
+        w = self.world
+        size = int(CELL * self.res)
+        s = pygame.Surface((size, size))
+        s.fill(COL_BG)
+        wx, wy = gx * CELL, gy * CELL
+
+        def tf(p):
+            return ((p[0] - wx) * self.res, (p[1] - wy) * self.res)
+        for i in w.area_grid.get((gx, gy), ()):  
+            _bb, pts, kind = w.areas[i]
+            pygame.draw.polygon(s, COL_WATER if kind == "water" else COL_GREEN,
+                                [tf(p) for p in pts])
+        for i in w.bldg_grid.get((gx, gy), ()):  
+            p = [tf(pt) for pt in w.buildings[i][1]]
+            pygame.draw.polygon(s, COL_BLDG, p)
+            pygame.draw.polygon(s, COL_BLDG_EDGE, p, 1)
+        for i in w.seg_grid.get((gx, gy), ()):  
+            ax, ay, bx, by, wd, kind, _k = w.segs[i]
+            a, b = tf((ax, ay)), tf((bx, by))
+            hw = wd * self.res
+            pygame.draw.line(s, COL_CASING, a, b, max(2, int(hw * 2 + 2)))
+            col = COL_ROAD_MAJOR if wd >= 7.5 else COL_ROAD
+            pygame.draw.line(s, col, a, b, max(1, int(hw * 2)))
+        return s
+
+    def get(self, gx, gy):
+        key = (gx, gy)
+        if key in self.tiles:
+            self.tiles.move_to_end(key)
+            return self.tiles[key]
+        t = self._render(gx, gy)
+        self.tiles[key] = t
+        while len(self.tiles) > self.max_tiles:
+            self.tiles.popitem(last=False)
+        return t
+
+    def draw(self, surf, cam):
+        z = cam.zoom
+        zb = round(z, 2)
+        vw, vh = W / z / 2 + CELL, H / z / 2 + CELL
+        x0, y0 = cam.x - vw, cam.y - vh
+        x1, y1 = cam.x + vw, cam.y + vh
+        w_px, h_px = int(CELL * z) + 1, int(CELL * z) + 1
+        for gx in range(int(x0 // CELL), int(x1 // CELL) + 1):
+            for gy in range(int(y0 // CELL), int(y1 // CELL) + 1):
+                if gx < 0 or gy < 0:
+                    continue
+                skey = (gx, gy, zb)
+                img = self.scaled.get(skey)
+                if img is None:
+                    img = pygame.transform.scale(self.get(gx, gy), (w_px, h_px))
+                    self.scaled[skey] = img
+                    while len(self.scaled) > 96:
+                        self.scaled.popitem(last=False)
+                surf.blit(img, ((gx * CELL - x0) * z, (gy * CELL - y0) * z))
+
+
+def draw_world(surf, world, cam, tiles):
     surf.fill(COL_BG)
-    for bbox, pts, kind in world.areas:
-        bx0, by0, bx1, by1 = bbox
-        if bx1 < x0 or bx0 > x1 or by1 < y0 or by0 > y1:
-            continue
-        pygame.draw.polygon(surf, COL_WATER if kind == "water" else COL_GREEN,
-                            [cam.apply(*p) for p in pts])
-    for bbox, pts in world.buildings:
-        bx0, by0, bx1, by1 = bbox
-        if bx1 < x0 or bx0 > x1 or by1 < y0 or by0 > y1:
-            continue
-        p = [cam.apply(*pt) for pt in pts]
-        pygame.draw.polygon(surf, COL_BLDG, p)
-        pygame.draw.polygon(surf, COL_BLDG_EDGE, p, 1)
-    for ax, ay, bx, by, wd, kind, _k in world.segs:
-        if max(ax, bx) < x0 or min(ax, bx) > x1 or max(ay, by) < y0 or min(ay, by) > y1:
-            continue
-        a = cam.apply(ax, ay)
-        b = cam.apply(bx, by)
-        hw = wd * z
-        pygame.draw.line(surf, COL_CASING, a, b, max(2, int(hw * 2 + 2)))
-        col = COL_ROAD_MAJOR if wd >= 7.5 else COL_ROAD
-        pygame.draw.line(surf, col, a, b, max(1, int(hw * 2)))
+    tiles.draw(surf, cam)
 
 
 def draw_street_name(surf, world, cam, car, cached):
@@ -704,8 +818,8 @@ def draw_street_name(surf, world, cam, car, cached):
     return name
 
 
-def draw_map(surf, world, car, cam, state, dec, stats, traffic, signals, mission, name_cache):
-    draw_world(surf, world, cam)
+def draw_map(surf, world, car, cam, state, dec, stats, traffic, signals, mission, name_cache, tiles):
+    draw_world(surf, world, cam, tiles)
     # rute (casing + garis)
     if len(car.route) > 1:
         step = max(1, len(car.route) // 400)
@@ -743,13 +857,27 @@ def draw_map(surf, world, car, cam, state, dec, stats, traffic, signals, mission
     hud(surf, [
         f"Gee-FunDriving | {world.meta['name']}",
         f"speed {car.speed:.1f}  alive {car.alive_time // FPS}s  wp {car.wp_i}/{len(car.route)}",
-        f"he {dec.get('he', 0):.0f}  lat {dec.get('lat', 0):.0f}m  {name}",
+        f"he {dec.get('he', 0):.0f}  lat {dec.get('lat', 0):.0f}m  {dec.get('acc', '')} {name}".replace("  ", " "),
         f"misi #{mission.n + 1} -> {gdist:.0f}m | skor {mission.score} | merah {mission.reds} tabrak {mission.crashes}",
     ] + ([stats] if stats else []))
 
 
 # ---------------------------------------------------------------- driver ----
-def run_map(mapfile, headless, seconds, surf, clock, outdir):
+def ll2xy(meta, lat, lon):
+    """lat/lon -> meter lokal, konsisten dgn proj fetch_osm (origin bbox corner)."""
+    lon0, lat0, lon1, lat1 = meta["bbox"]
+    x = math.radians(lon - lon0) * 6378137.0 * math.cos(math.radians((lat0 + lat1) / 2))
+    y = math.radians(lat1 - lat) * 6378137.0
+    return x, y
+
+
+def parse_ll(s):
+    a, b = s.split(",")
+    return float(a), float(b)
+
+
+def run_map(mapfile, headless, seconds, surf, clock, outdir,
+            start_coord=None, goal_coord=None, heading=None):
     frames_dir = os.path.join(outdir, "frames")
     if headless:
         os.makedirs(frames_dir, exist_ok=True)
@@ -757,7 +885,11 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir):
             os.remove(os.path.join(frames_dir, f))
     world = OSMWorld(mapfile)
     comp = largest_component(world)
-    start = min(comp, key=lambda n: world.nodes[n][0])
+    if start_coord:
+        sxm, sym = ll2xy(world.meta, *start_coord)
+        start = world.nearest_node(sxm, sym, comp)
+    else:
+        start = min(comp, key=lambda n: world.nodes[n][0])
     sx, sy = world.nodes[start]
     goal = max(comp, key=lambda n: (world.nodes[n][0] - sx) ** 2 + (world.nodes[n][1] - sy) ** 2)
     route = world.route(start, goal)
@@ -765,20 +897,43 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir):
         print("rute gak ketemu — coba bbox lain")
         sys.exit(1)
     car = MapCar(world, start, route)
+    if heading is not None:
+        car.heading = heading % 360.0
     signals = Signals(world, comp)
     traffic = Traffic(world, comp, (sx, sy))
     mission = Mission(world, comp, start)
-    mission.new(start, car)
+    first_ok = False
+    if goal_coord:
+        gxm, gym = ll2xy(world.meta, *goal_coord)
+        goal_node = world.nearest_node(gxm, gym, comp)
+        first_ok = mission.new_fixed(start, goal_node, car)
+        if first_ok:
+            print(f"misi eksplisit: {start} -> {goal_node}", file=sys.stderr)
+    if not first_ok:
+        mission.new(start, car)
     print(f"route: {len(route)} wp | lampu {len(signals.nodes)} | mobil AI {len(traffic.cars)}",
           file=sys.stderr)
     cam = Camera()
     cam.x, cam.y = car.x, car.y
+    tiles = WorldTiles(world)
     name_cache = [0, ""]
     total = FPS * seconds
     crash_cd = 0
     zoom = cam.zoom
     for fi in range(total):
         state = car.sense()
+        # ACC: cari mobil AI paling deket di koridor depan
+        hdir = math.radians(car.heading)
+        fx_, fy_ = math.cos(hdir), math.sin(hdir)
+        gap = None
+        for tc in traffic.cars:
+            dx_, dy_ = tc["x"] - car.x, tc["y"] - car.y
+            fwd = dx_ * fx_ + dy_ * fy_
+            if 0 < fwd < 55:
+                lat = abs(-dx_ * fy_ + dy_ * fx_)
+                if lat < 11 and (gap is None or fwd < gap):
+                    gap = fwd
+        state["ahead_gap"] = gap
         steer, thr, brk, dec = map_brain(state)
         # berhenti di lampu merah: cek node tujuan aktif
         tgt = car.route[min(car.wp_i, len(car.route) - 1)]
@@ -818,8 +973,8 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir):
         cam.follow(car.x, car.y)
         cam.zoom = zoom
         name_cache[0] = (name_cache[0] + 1) % 15
-        draw_map(surf, world, car, cam, state, dec, "",
-                 traffic, signals, mission, name_cache)
+        draw_map(surf, world, car, cam, state, dec, f"{clock.get_fps():.0f} fps",
+                 traffic, signals, mission, name_cache, tiles)
         # misi selesai -> skor + misi baru
         if car.finished:
             pts = mission.complete(car)
@@ -893,6 +1048,9 @@ def main():
     mapfile = None
     if "--map" in args:
         mapfile = args[args.index("--map") + 1]
+    start_coord = parse_ll(args[args.index("--start") + 1]) if "--start" in args else None
+    goal_coord = parse_ll(args[args.index("--goal") + 1]) if "--goal" in args else None
+    heading = float(args[args.index("--heading") + 1]) if "--heading" in args else None
 
     outdir = os.path.expanduser("~/gee-fundriving")
     os.makedirs(outdir, exist_ok=True)
@@ -906,7 +1064,8 @@ def main():
     clock = pygame.time.Clock()
 
     if mapfile:
-        run_map(mapfile, headless, seconds, surf, clock, outdir)
+        run_map(mapfile, headless, seconds, surf, clock, outdir,
+                start_coord, goal_coord, heading)
         pygame.quit()
     else:
         run_circuit(headless, seconds, surf, clock)

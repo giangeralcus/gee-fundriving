@@ -12,21 +12,30 @@ Sim jalan di **peta kota asli** — misal daerah Puri Indah, Jakarta Barat:
 
 ```bash
 # 1. Fetch jalan + bangunan + area dari OpenStreetMap (sekali saja)
-python3 tools/fetch_osm.py        # -> maps/puri_indah.json (1137 jalan, 9.2rb bangunan, 3.6x2.9 km)
+python3 tools/fetch_osm.py                       # default: Puri Indah -> Cengkareng/Taman Palem
+                                                 #   (9.2rb jalan, 80rb bangunan, 9.4x8.9 km)
+python3 tools/fetch_osm.py --preset puri-indah   # area kecil Puri Indah doang
+python3 tools/fetch_osm.py --bbox -6.19 106.73 -6.15 106.76 --name "Area X" --out maps/x.json
 
 # 2. Main di peta asli: mode misi, mobil AI, lampu merah
-python3 fundriving.py --map maps/puri_indah.json
+python3 fundriving.py --map maps/puri_cengkareng.json
+
+# Atur koordinat sendiri: start (Puri Indah) -> tujuan (Taman Palem)
+python3 fundriving.py --map maps/puri_cengkareng.json \
+    --start "-6.1912,106.7407" --goal "-6.1520,106.7225"
+
 # headless (rekam MP4, butuh ffmpeg):
-python3 fundriving.py --map maps/puri_indah.json --headless --seconds 150
+python3 fundriving.py --map maps/puri_cengkareng.json --headless --seconds 150
 ```
 
 Fitur map mode:
-- **Dunia berlapis**: jalan per-tipe (tol 22m s/d gang 8m) dengan casing, 9rb+ poligon bangunan, area hijau/air — semua dari OSM
-- **Mode misi**: tujuan acak 500–2600m, skor = rute terpendek ÷ rute ditempuh × 1000, −40/lampu merah, −25/tabrakan; selesai → auto misi baru
-- **Lalu lintas**: 16 mobil AI random-walk di graf jalan (lane kanan, jaga jarak) + 122 lampu lalu lintas siklus 7 detik — AI dan mobil lu sama-sama berhenti di merah, nyabrang kena denda
-- **Nama jalan** muncul di dekat mobil (label), pathfinding A*-like di graf OSM
+- **Dunia berlapis**: jalan per-tipe (tol 22m s/d gang 8m) dengan casing, poligon bangunan, area hijau/air — semua dari OSM, dirender via chunk cache per-tile 500m (60fps di peta 9x9 km)
+- **Koordinat bisa diatur**: `--start "lat,lon"`, `--goal "lat,lon"`, `--heading derajat` — misi eksplisit antar dua titik
+- **Mode misi**: skor = rute terpendek ÷ rute ditempuh × 1000, −40/lampu merah, −25/tabrakan; selesai → auto misi baru
+- **Lalu lintas**: mobil AI random-walk di graf jalan (lane kanan, jaga jarak) + lampu lalu lintas siklus 7 detik — AI dan mobil lu sama-sama berhenti di merah, nyabrang kena denda
+- **Self-driving v2**: antisipasi tikungan (rem berdasar curvature depan — slow-in fast-out), ACC jaga jarak dari mobil depan (REM!/ikut/geser di HUD), steering proporsional
+- **Nama jalan** muncul di dekat mobil, pathfinding A*-like di graf OSM
 - **Kamera follow** + zoom `[-][=]`, `R` misi baru, `ESC` keluar
-- Headless verifikasi: misi #1 +912 poin (efisiensi rute 91%)
 
 Tambah peta daerah lain: ubah `LAT0/LON0/LAT1/LON1` di `tools/fetch_osm.py`.
 
