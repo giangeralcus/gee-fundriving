@@ -1,0 +1,6 @@
+# window/canvas scaling
+*.pyc
+__pycache__/
+frames/
+*.mp4
+.venv/
