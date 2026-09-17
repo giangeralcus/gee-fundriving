@@ -350,17 +350,25 @@ class OSMWorld:
 
 
 class Signals:
-    """Lampu lalu lintas di simpang (derajat >= 4). Fase bergantian
-    sumbu horizontal (0) / vertikal (1)."""
+    """Lampu lalu lintas di simpang NYATA (bukan parkir kompleks): derajat >= 4
+    dan minimal satu segmen penghubung berkelas jalan besar. Fase bergantian
+    sumbu horizontal (0) / vertikal (1). Hanya digambar dekat mobil."""
 
     CYCLE = 420  # frame per fase (7s @60fps)
+    DRAW_RADIUS = 420.0
+    MAJOR = {"motorway", "trunk", "primary", "secondary", "tertiary", "residential"}
 
     def __init__(self, world, comp):
         self.world = world
-        self.nodes = set()
-        for n in comp:
-            if len(world.adj.get(n, ())) >= 4:
-                self.nodes.add(n)
+        cand = set()
+        for ax, ay, bx, by, _wd, kind, (a, b) in world.segs:
+            if kind not in self.MAJOR:
+                continue
+            if a in comp and len(world.adj.get(a, ())) >= 4:
+                cand.add(a)
+            if b in comp and len(world.adj.get(b, ())) >= 4:
+                cand.add(b)
+        self.nodes = cand
         self.node_list = sorted(self.nodes)
         self.pos = [world.nodes[n] for n in self.node_list]
         self.frame = 0
@@ -379,10 +387,13 @@ class Signals:
     def update(self):
         self.frame += 1
 
-    def draw(self, surf, cam):
+    def draw(self, surf, cam, car_pos=None):
         z = cam.zoom
-        for n in self.nodes:
-            nx, ny = cam.apply(*self.world.nodes[n])
+        for n, (wx, wy) in zip(self.node_list, self.pos):
+            if car_pos is not None:
+                if (wx - car_pos[0]) ** 2 + (wy - car_pos[1]) ** 2 > self.DRAW_RADIUS ** 2:
+                    continue
+            nx, ny = cam.apply(wx, wy)
             if not (-20 < nx < W + 20 and -20 < ny < H + 20):
                 continue
             ph = (self.frame // self.CYCLE) % 2
@@ -774,7 +785,7 @@ class Camera:
     def __init__(self):
         self.x = 0.0
         self.y = 0.0
-        self.zoom = 0.55
+        self.zoom = 0.7
 
     def apply(self, x, y):
         return ((x - self.x) * self.zoom + W / 2,
@@ -912,7 +923,7 @@ def draw_map(surf, world, car, cam, state, dec, stats, traffic, signals, mission
     # waypoint aktif
     wp = cam.apply(*state["wp"])
     pygame.draw.circle(surf, (240, 200, 80), (int(wp[0]), int(wp[1])), 5)
-    signals.draw(surf, cam)
+    signals.draw(surf, cam, (car.x, car.y))
     traffic.draw(surf, cam)
     # target misi (denyut)
     if mission.goal is not None:
@@ -930,6 +941,7 @@ def draw_map(surf, world, car, cam, state, dec, stats, traffic, signals, mission
            for dx, dy in ((CAR_LEN / 2, 0), (-CAR_LEN / 2, CAR_W / 2), (-CAR_LEN / 2, -CAR_W / 2))]
     col = (80, 220, 120) if not car.finished else (90, 160, 255)
     pygame.draw.polygon(surf, col, pts)
+    pygame.draw.circle(surf, (255, 255, 255), (int(cx), int(cy)), max(10, int(17 * z)), 2)
     # nama jalan
     name = draw_street_name(surf, world, cam, car, name_cache)
     # HUD
