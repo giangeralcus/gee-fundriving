@@ -16,8 +16,8 @@ MODE:
 
 Headless: rekam MP4 (butuh ffmpeg). Mulai langsung nyetir sendiri: --manual.
 Windowed tanpa argumen: main menu START / SETTINGS / ABOUT / EXIT — setelan
-(mode, peta, fps render) tersimpan di ~/gee-fundriving/settings.json; ESC di
-game balik ke menu.
+(mode, peta, fps render, kecepatan) tersimpan di ~/gee-fundriving/settings.json;
+ESC di game balik ke menu. --speed 1.25 = pengali kecepatan basis (CLI).
 """
 import json
 import math
@@ -35,6 +35,7 @@ FPS = 60              # tick fisika simulasi (Hz) — semua konstanta tuning dii
 RENDER_FPS = 30       # render + input + rekam video (fps)
 RENDER_EVERY = FPS // RENDER_FPS   # fisika jalan tiap tick, render tiap N tick
 SETTINGS_PATH = os.path.join(os.path.expanduser("~"), "gee-fundriving", "settings.json")
+SPEED_STEPS = (0.5, 0.75, 1.0, 1.25, 1.5)   # pengali kecepatan basis
 
 
 def set_render_fps(n):
@@ -747,31 +748,36 @@ class MapCar:
 
 
 def map_brain(state):
-    """Brain v2: steering proporsional + ANTISIPASI tikungan (slow-in,
-    fast-out: rem sebelum tikungan berdasar curvature depan) + ACC (jaga
-    jarak dari mobil depan kalau ada state['ahead_gap'])."""
+    """Brain v3 — pola Regulated Pure Pursuit (arXiv 2305.20026): kecepatan
+    target KONTINYU dari curvature, v_target = 1/(1 + curv/K), pengganti
+    bucket rem diskrit yang bikin mobil ngerem penuh lalu creeping. Plus
+    heading error (darurat), ACC jaga jarak, anti-stall."""
     he = state["heading_err"]
     curv = state.get("curv", 0.0)
     gap = state.get("ahead_gap")
     steer = max(-1.0, min(1.0, he / 40.0))
+    # kecepatan target kontinyu (relatif 0..1): tikungan tajam = pelan mulus
+    vt = 1.0 / (1.0 + curv / 40.0)
     sharp = abs(he)
-    # antisipasi tikungan: makin tajam, makin pagi ngerem (agresif biar gak motong)
-    if curv > 50:
-        thr, brk = 0.0, 0.9
-    elif curv > 30:
-        thr, brk = 0.25, 0.0
-    elif curv > 15:
-        thr, brk = 0.65, 0.0
-    else:
-        thr, brk = 1.0, 0.0
     # heading error tajam tetap menang
     if sharp > 90:
-        thr, brk = 0.0, 1.0
+        vt = 0.0
     elif sharp > 45:
-        thr, brk = min(thr, 0.25), 0.0
+        vt = min(vt, 0.25)
     elif sharp > 20:
-        thr = min(thr, 0.6)
-    # ACC: mobil depan deket -> rem proporsional (jangan tibrung dari belakang)
+        vt = min(vt, 0.6)
+    # gas/rem proporsional menuju target (slow-in fast-out tanpa patah-patah)
+    speed_norm = state.get("speed_norm", 0.0)
+    dv = vt - speed_norm
+    thr = 0.0
+    brk = 0.0
+    if dv < -0.04:
+        brk = min(1.0, -dv * 3.0)
+    elif dv > 0.04:
+        thr = min(1.0, dv * 3.0)
+    else:
+        thr = 0.2
+    # ACC: mobil depan deket -> rem proporsional (jangan tabrak dari belakang)
     acc = ""
     if gap is not None:
         if gap < 10:
@@ -787,9 +793,9 @@ def map_brain(state):
             thr = min(thr, 0.35)
             acc = "geser"
     # ANTI-STALL: nol speed + gak ada rintangan -> jangan deadlock di rem
-    if state.get("speed_norm", 0) < 0.05 and gap is None and brk > 0:
+    if speed_norm < 0.05 and gap is None and brk > 0:
         thr, brk = 0.35, 0.0
-    return steer, thr, brk, {"he": he, "lat": state["lateral"], "acc": acc}
+    return steer, thr, brk, {"he": he, "lat": state["lateral"], "acc": acc, "vt": vt}
 
 
 def driver_controls(pressed):
@@ -1014,7 +1020,7 @@ def parse_ll(s):
 
 def run_map(mapfile, headless, seconds, surf, clock, outdir,
             start_coord=None, goal_coord=None, heading=None, record=True,
-            width_scale=1.35, auto_start=True):
+            width_scale=1.35, auto_start=True, speed_scale=1.0):
     frames_dir = os.path.join(outdir, "frames")
     if headless:
         os.makedirs(frames_dir, exist_ok=True)
@@ -1034,6 +1040,10 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
         print("rute gak ketemu — coba bbox lain")
         sys.exit(1)
     car = MapCar(world, start, simplify([world.nodes[n] for n in route], eps=12.0))
+    # kecepatan basis bisa diatur (SETTINGS/--speed): skala MAXV + ACC bareng
+    # biar akselerasi & feel tetap proporsional. Instance attr menimpa class.
+    car.MAXV = MapCar.MAXV * speed_scale
+    car.ACC = MapCar.ACC * speed_scale
     if heading is not None:
         car.heading = heading % 360.0
     signals = Signals(world, comp)
@@ -1285,6 +1295,7 @@ def load_settings():
         "mode": s.get("mode") if s.get("mode") in ("assistant", "manual") else "assistant",
         "map": s.get("map") if s.get("map") in ("loop", "circuit", "osm") else "loop",
         "fps": s.get("fps") if s.get("fps") in (30, 60) else 30,
+        "speed": s.get("speed") if s.get("speed") in SPEED_STEPS else 1.0,
     }
     if st["map"] == "osm" and not os.path.exists(os.path.join("maps", "puri_cengkareng.json")):
         st["map"] = "loop"
@@ -1329,6 +1340,8 @@ def settings_screen(surf, clock, settings):
             ("MODE", settings["mode"], mode_opts),
             ("PETA", settings["map"], map_opts),
             ("RENDER FPS", settings["fps"], [30, 60]),
+            ("KECEPATAN", settings.get("speed", 1.0),
+             [(f"{v:g}x", v) for v in SPEED_STEPS]),
         ]
 
     def val_label(cur, choices):
@@ -1361,7 +1374,8 @@ def settings_screen(surf, clock, settings):
                     step = -1 if ev.key == pygame.K_LEFT else 1
                     newval = keys[(idx + step) % len(keys)]
                     settings[{"MODE": "mode", "PETA": "map",
-                              "RENDER FPS": "fps"}[label]] = newval
+                              "RENDER FPS": "fps",
+                              "KECEPATAN": "speed"}[label]] = newval
                     if label == "RENDER FPS":
                         set_render_fps(newval)
                     save_settings(settings)
@@ -1516,6 +1530,12 @@ def main():
         seconds = int(args[args.index("--seconds") + 1])
     elif not headless:
         seconds = None  # main santai di windowed: tanpa timer
+    speed_scale = 1.0
+    if "--speed" in args:
+        try:
+            speed_scale = float(args[args.index("--speed") + 1])
+        except (IndexError, ValueError):
+            pass
     mapfile = None
     if "--map" in args:
         mapfile = args[args.index("--map") + 1]
@@ -1562,13 +1582,15 @@ def main():
                 run_circuit(False, None, surf, clock, auto_start=picked["auto_start"])
             else:
                 run_map(picked["mapfile"], False, None, surf, clock, outdir,
-                        auto_start=picked["auto_start"])
+                        auto_start=picked["auto_start"],
+                        speed_scale=settings.get("speed", 1.0))
         pygame.quit()
         return
 
     if mapfile:
         run_map(mapfile, headless, seconds, surf, clock, outdir,
-                start_coord, goal_coord, heading, auto_start=auto_start)
+                start_coord, goal_coord, heading, auto_start=auto_start,
+                speed_scale=speed_scale)
         pygame.quit()
     else:
         run_circuit(headless, seconds, surf, clock, auto_start=auto_start)

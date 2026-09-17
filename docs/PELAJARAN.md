@@ -120,3 +120,52 @@ Diurut kira-kira sesuai urutan kejadian.
 port, dan debugging jadi murah; (2) setiap klaim "udah bener" butuh ukuran
 (A/B seed, tick rate, skor); (3) environment (PATH, build ffmpeg, throttle
 browser) lebih sering jadi penyebab daripada algoritmanya.
+
+## 13. Adopsi dari simulasi orang lain: v_target kontinyu, bukan bucket rem
+
+- **Kejadian**: assistant "aneh" — ngerem penuh di depan tikungan (bucket
+  `curv > 50 -> brk 0.9`) lalu ditarik-ndorong anti-stall, jadinya creeping.
+- **Riset**: pola dari simulasi orang lain — [Regulated Pure Pursuit
+  (arXiv 2305.20026, NVIDIA Nav2)](https://arxiv.org/pdf/2305.20026) pakai
+  regulasi kecepatan berbasis curvature; [arimb/PurePursuit](https://github.com/arimb/PurePursuit)
+  hitung curvature -> velocity tiap tick; [ETH MAP controller](https://www.research-collection.ethz.ch/server/api/core/bitstreams/6b6b5f75-08a5-4760-a5f3-ceac30e5dc70/content)
+  turunkan v dari `v = sqrt(a_lat/kappa)`.
+- **Adopsi**: `v_target = 1/(1 + curv/40)` kontinyu (relatif), gas/rem
+  proporsional ke selisih `(v_target - speed_norm)` — slow-in fast-out tanpa
+  patah. Hasil: tempuh 5 detik naik ~44m -> ~230m+, skor misi konsisten
+  920-1015 (dulu 921-1008 tapi dengan creeping), nol macet di 4 run x 4 menit.
+- **Pelajaran**: bucket diskrit = patah-patah + osilasi sama anti-stall;
+  target kontinyu + kontrol proporsional lebih halus DAN lebih simple.
+
+## 14. Kecepatan basis bisa diatur: instance attr menimpa class constant
+
+- **Kejadian**: permintaan "kalo aneh/nyangkut, kecepatan basis bisa diatur".
+  `MAXV`/`ACC` tadinya class constant yang dibaca langsung.
+- **Adopsi**: instance attribute (`car.MAXV = MapCar.MAXV * speed_scale`) —
+  Python/JS sama-sama mengizinkan instance menimpa static. Skala MAXV dan ACC
+  BARENG biar feel akselerasi proporsional. Dibuka di SETTINGS
+  (KECEPATAN 0.5x-1.5x, persist settings.json / localStorage) + `--speed` CLI.
+- **Pelajaran**: knob user = instance state; class constant = kontrak fisika.
+  Jangan ubah kontraknya, timpa per-instans.
+
+## 15. Refactor map: satu sumber kebenaran buat edge
+
+- **Kejadian**: pasangan edge di-enumerasi di 3 tempat (World, Game._edgeCache,
+  test) dan Signals nyusun ulang simpang lewat matching posisi node di Game —
+  konstruksi dua-fase, gampang selisih.
+- **Refactor**: `World` hitung `edges` (unik) + `edgeById` + `edgeByPos`
+  sekali di konstruktor; `Signals` hitung simpangnya sendiri di konstruktor
+  dari data itu; hack `Game._signalsEdgeIds/_findEdge/_edgeCache` dihapus
+  (-45 baris). Test paritas (6 lampu, 13 mobil) naik status jadi hard assert.
+- **Pelajaran**: saat ngerefactor, ubah test paritas dari "catatan" jadi
+  assert keras — refactor beneran gak boleh mengubah perilaku, dan harus
+  terbukti sama test.
+
+## 16. Test dulu baru percaya: regression refactor ketangkep dalam 1 run
+
+- **Kejadian**: versi pertama refactor salah key (`"min|max"` vs
+  `"ax,ay|bx,by"`) -> lampu = 0. Test headless langsung tangkep sebelum sempat
+  ke browser.
+- **Pelajaran**: "recursive learning" itu literally ini — setiap iterasi
+  dipagari test dari iterasi sebelumnya (paritas lampu/mobil yang dulu
+  catatan kaki, sekarang pagar).

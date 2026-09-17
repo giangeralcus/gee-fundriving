@@ -69,14 +69,15 @@ assert opened["about"] == 1, opened
 print("PASS: menu -> SETTINGS/ABOUT terbuka -> EXIT")
 fd.settings_screen, fd.about_screen = real_settings_screen, real_about_screen
 
-# --- 5. settings: ubah mode/peta/fps, tersimpan ke file ---
-st = {"mode": "assistant", "map": "loop", "fps": 30}
+# --- 5. settings: ubah mode/peta/fps/kecepatan, tersimpan ke file ---
+st = {"mode": "assistant", "map": "loop", "fps": 30, "speed": 1.0}
 key(pygame.K_RIGHT)             # MODE -> KENDALI SENDIRI
 key(pygame.K_DOWN); key(pygame.K_RIGHT)   # PETA -> SIRKUIT
 key(pygame.K_DOWN); key(pygame.K_RIGHT)   # FPS -> 60
+key(pygame.K_DOWN); key(pygame.K_RIGHT)   # KECEPATAN -> 1.25x
 key(pygame.K_ESCAPE)
 fd.settings_screen(surf, clock, st)
-assert st == {"mode": "manual", "map": "circuit", "fps": 60}, st
+assert st == {"mode": "manual", "map": "circuit", "fps": 60, "speed": 1.25}, st
 assert fd.RENDER_FPS == 60 and fd.RENDER_EVERY == 1
 with open(fd.SETTINGS_PATH, encoding="utf-8") as f:
     assert json.load(f) == st, "file settings gak tersimpan"
@@ -91,7 +92,7 @@ print("PASS: settings ubah+persist+load ulang")
 with open(fd.SETTINGS_PATH, "w", encoding="utf-8") as f:
     json.dump({"mode": "ngasal", "map": "osm", "fps": 120}, f)
 st3 = fd.load_settings()
-assert st3 == {"mode": "assistant", "map": "loop", "fps": 30}, st3
+assert st3 == {"mode": "assistant", "map": "loop", "fps": 30, "speed": 1.0}, st3
 os.remove(fd.SETTINGS_PATH)
 print("PASS: load_settings validasi & fallback")
 
@@ -139,4 +140,19 @@ stats = fd.run_map(LOOP, False, 8, surf, clock, tempfile.mkdtemp(),
 assert stats["tempuh_m"] > 40, stats["tempuh_m"]
 print(f"PASS: mode assistant — tempuh {stats['tempuh_m']:.0f}m dalam 8s sim")
 pygame.quit()
+
+# --- 12. speed_scale: kecepatan basis 0.5x harus lebih lambat dari 1.0x ---
+def jalan(speed_scale):
+    pygame.init()
+    s = pygame.display.set_mode((fd.W, fd.H))
+    c = pygame.time.Clock()
+    st = fd.run_map(LOOP, False, 3, s, c, tempfile.mkdtemp(),
+                    record=False, auto_start=True, speed_scale=speed_scale)
+    pygame.quit()
+    return st["tempuh_m"]
+
+cepat = jalan(1.0)
+lambat = jalan(0.5)
+assert 0 < lambat < cepat, (lambat, cepat)
+print(f"PASS: speed_scale — 1.0x {cepat:.0f}m vs 0.5x {lambat:.0f}m dalam 3s")
 print("SEMUA PASS")
