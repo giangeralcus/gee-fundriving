@@ -21,8 +21,11 @@ import pygame  # noqa: E402
 import fundriving as fd  # noqa: E402
 
 W, H = 960, 540
-MAPFILE = os.path.join("maps", "puri_cengkareng.json")
+MAPFILE = (os.path.join("maps", "puri_cengkareng.json")
+           if os.path.exists(os.path.join("maps", "puri_cengkareng.json"))
+           else os.path.join("maps", "loop_city.json"))
 POIFILE = os.path.join("maps", "poi.json")
+IS_LOOP = "loop_city" in MAPFILE
 HIST = os.path.join("docs", "benchmark", "history.jsonl")
 
 
@@ -31,11 +34,15 @@ def run_one(world_ready, direction, seconds):
     surf = pygame.Surface((W, H))
     clock = pygame.time.Clock()
     out = os.path.expanduser("~/gee-fundriving")
-    stats = fd.run_map(MAPFILE, True, seconds, surf, clock, out,
-                       start_coord=(a["lat"], a["lon"]),
-                       goal_coord=(b["lat"], b["lon"]),
-                       record=False)
-    stats["arah"] = f"{a['name']} -> {b['name']}"
+    if IS_LOOP:
+        stats = fd.run_map(MAPFILE, True, seconds, surf, clock, out, record=False)
+        stats["arah"] = "Loop City (misi acak)"
+    else:
+        stats = fd.run_map(MAPFILE, True, seconds, surf, clock, out,
+                           start_coord=(a["lat"], a["lon"]),
+                           goal_coord=(b["lat"], b["lon"]),
+                           record=False)
+        stats["arah"] = f"{a['name']} -> {b['name']}"
     return stats
 
 
@@ -46,9 +53,8 @@ def main():
 
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     pygame.init()
-    with open(POIFILE, encoding="utf-8") as f:
-        poi = json.load(f)
-    gs, pi_ = poi["green-sedayu"], poi["puri-indah"]
+    if IS_LOOP:
+        gs = pi_ = None  # loop city: misi acak, tanpa POI
 
     results = []
     for arah in ((gs, pi_), (pi_, gs)):

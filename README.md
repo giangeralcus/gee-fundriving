@@ -6,38 +6,51 @@ Simulasi nyetir 2D top-down: **1 mobil autonomous** keliling sirkuit dengan *Sys
 
 ![gameplay](docs/demo.png)
 
-## Peta OSM (dunia kota + traffic + misi)
+## Loop City (default, peta internal — instan & gampang diadaptasi)
 
-Sim jalan di **peta kota asli** — misal daerah Puri Indah, Jakarta Barat:
+Peta ring kota bikinan sendiri: 1 jalan lingkar + 3 jalan cross (6 simpang
+berlampu) + bangunan + taman. Loading instan, semua fitur jalan. Mau diubah-
+ubah? Semua parameter ada di atas `tools/make_loopmap.py` (ukuran ring, lebar
+jalan, kepadatan bangunan, posisi cross, seed).
 
 ```bash
-# 1. Fetch jalan + bangunan + area dari OpenStreetMap (sekali saja)
-python3 tools/fetch_osm.py                       # default: Puri Indah -> Cengkareng/Taman Palem
-                                                 #   (9.2rb jalan, 80rb bangunan, 9.4x8.9 km)
-python3 tools/fetch_osm.py --preset puri-indah   # area kecil Puri Indah doang
-python3 tools/fetch_osm.py --bbox -6.19 106.73 -6.15 106.76 --name "Area X" --out maps/x.json
+python tools/make_loopmap.py     # regenerate peta (23KB, sekali saja)
+python fundriving.py --map loop  # mode misi + traffic + lampu di Loop City
+```
 
-# 2. Main di peta asli: mode misi, mobil AI, lampu merah
-python3 fundriving.py --map maps/puri_cengkareng.json
+## Peta OSM nyata (opsional, berat — fetch sendiri)
 
-# Atur koordinat sendiri: start (Puri Indah) -> tujuan (Taman Palem)
-python3 fundriving.py --map maps/puri_cengkareng.json \
-    --start "-6.1912,106.7407" --goal "-6.1520,106.7225"
+Mau dunia kota asli? Fetch dari OpenStreetMap (butuh internet, hasilnya puluhan MB, gak disimpan di repo):
+
+```bash
+python tools/fetch_osm.py                          # preset: Puri Indah -> Cengkareng/Taman Palem
+python tools/fetch_osm.py --preset puri-indah      # area kecil Puri Indah doang
+python tools/fetch_osm.py --bbox -6.19 106.73 -6.15 106.76 --name "Area X" --out maps/x.json
+
+# koordinat bebas + rute antar dua titik (contoh: Green Sedayu -> Puri Indah Mall):
+python fundriving.py --map maps/puri_cengkareng.json \
+    --route green-sedayu puri-indah
+# atau langsung lat,lon:
+python fundriving.py --map maps/puri_cengkareng.json \
+    --start "-6.1390775,106.7286378" --goal "-6.1882573,106.7338886"
 
 # headless (rekam MP4, butuh ffmpeg):
-python3 fundriving.py --map maps/puri_cengkareng.json --headless --seconds 150
+python fundriving.py --map loop --headless --seconds 60
 ```
 
 Fitur map mode:
-- **Dunia berlapis**: jalan per-tipe (tol 22m s/d gang 8m) dengan casing, poligon bangunan, area hijau/air — semua dari OSM, dirender via chunk cache per-tile 500m (60fps di peta 9x9 km)
-- **Koordinat bisa diatur**: `--start "lat,lon"`, `--goal "lat,lon"`, `--heading derajat` — misi eksplisit antar dua titik
+- **Self-driving v3**: pure pursuit (target selalu di atas rute), progresi proyeksi segmen, raut rute Douglas-Peucker (bunuh zigzag dual-carriageway), antisipasi tikungan (rem curvature, slow-in fast-out), ACC proporsional searah (lawan arah bukan rintangan), anti-stall, safety-net snap kalau keluar > 35m
+- **Lajur kanan**: mobil jalan di lajur kanan (bukan tengah jalan), AI deteksi mobil lu sebagai rintangan
+- **Dunia berlapis**: jalan per-tipe dengan casing, poligon bangunan, area hijau/air — chunk cache per-tile 500m (60fps di peta 9x9 km)
+- **Koordinat bisa diatur**: `--route poi-a poi-b` (dari maps/poi.json), atau `--start "lat,lon"` + `--goal "lat,lon"` + `--heading derajat`
 - **Mode misi**: skor = rute terpendek ÷ rute ditempuh × 1000, −40/lampu merah, −25/tabrakan; selesai → auto misi baru
-- **Lalu lintas**: mobil AI random-walk di graf jalan (lane kanan, jaga jarak) + lampu lalu lintas siklus 7 detik — AI dan mobil lu sama-sama berhenti di merah, nyabrang kena denda
-- **Self-driving v2**: antisipasi tikungan (rem berdasar curvature depan — slow-in fast-out), ACC jaga jarak dari mobil depan (REM!/ikut/geser di HUD), steering proporsional
-- **Nama jalan** muncul di dekat mobil, pathfinding A*-like di graf OSM
-- **Kamera follow** + zoom `[-][=]`, `R` misi baru, `ESC` keluar
+- **Lalu lintas**: mobil AI random-walk di graf (lane kanan, jaga jarak, deteksi hero) + lampu lalu lintas siklus 7 detik, nyabrang merah kena denda
+- **Nama jalan** di dekat mobil, pathfinding A* di graf OSM
+- **Kamera follow** + zoom `[-][=]`, `R` misi baru, `ESC` keluar, FPS live di HUD
 
-Tambah peta daerah lain: ubah `LAT0/LON0/LAT1/LON1` di `tools/fetch_osm.py`.
+Benchmark learning curve: `python tools/benchmark.py` (dua arah Green Sedayu ↔ Puri Indah di peta OSM, atau misi acak di Loop City) — hasil tercatat di `docs/benchmark/history.jsonl`.
+
+Tambah peta daerah lain: ubah koordinat bbox di `tools/fetch_osm.py` atau pakai `--bbox`.
 
 ## Konsep
 

@@ -433,7 +433,7 @@ class Traffic:
         return {"a": a, "b": b, "t": t, "L": L,
                 "x": ax + (bx - ax) * t, "y": ay + (by - ay) * t,
                 "heading": math.degrees(ang),
-                "base": random.uniform(1.5, 2.6), "speed": 0.0}
+                "base": random.uniform(2.2, 3.3), "speed": 0.0}
 
     def _lane(self, w):
         for c in self.cars:
@@ -444,7 +444,7 @@ class Traffic:
         bx, by = w.nodes[c["b"]]
         dx, dy = bx - ax, by - ay
         L = c["L"]
-        off = w.seg_halfw(c["a"], c["b"]) * 0.45
+        off = w.seg_halfw(c["a"], c["b"]) * 0.55
         px, py = -dy / L, dx / L   # kanan arah jalan (y-down)
         c["x"] += px * off
         c["y"] += py * off
@@ -460,7 +460,7 @@ class Traffic:
         nc["base"] = c["base"]
         return nc
 
-    def update(self, signals):
+    def update(self, signals, hero=None):
         w = self.world
         # indeks leader per segmen terarah
         on_edge = {}
@@ -471,10 +471,17 @@ class Traffic:
         for i, c in enumerate(self.cars):
             # cari leader di segmen sama
             tgt_speed = c["base"]
+            # deteksi HERO sebagai rintangan di depan (searah & dekat)
+            if hero is not None:
+                hx_, hy_ = math.cos(math.radians(c["heading"])), math.sin(math.radians(c["heading"]))
+                dxh, dyh = hero[0] - c["x"], hero[1] - c["y"]
+                fwdh = dxh * hx_ + dyh * hy_
+                if 0 < fwdh < 32 and abs(-dxh * hy_ + dyh * hx_) < 6:
+                    tgt_speed = 0.0
             for t_other, j in on_edge.get((c["a"], c["b"]), ()):
                 if j != i and t_other > c["t"]:
                     gap = (t_other - c["t"]) * c["L"]
-                    if gap < 24:
+                    if gap < 30:
                         tgt_speed = 0.0
                         break
             # lampu merah di node tujuan
@@ -498,7 +505,7 @@ class Traffic:
             t = c["t"]
             px, py = ax + (bx - ax) * t, ay + (by - ay) * t
             L = c["L"]
-            off = w.seg_halfw(c["a"], c["b"]) * 0.45
+            off = w.seg_halfw(c["a"], c["b"]) * 0.55
             dx, dy = bx - ax, by - ay
             c["x"], c["y"] = px + (-dy / L) * off, py + (dx / L) * off
 
@@ -596,6 +603,7 @@ class MapCar:
     LOOKAHEAD_BASE = 16  # lookahead dinamis: 16 + 6*speed (motong tikungan minim)
     LOOKAHEAD_GAIN = 6.0
     CAPTURE = 12.0      # radius capture kecil (toleransi ujung rute)
+    LANE_OFF = 3.5      # geser kanan: mobil jalan di lajur kanan, bukan tengah
 
     def _lookahead(self):
         return self.LOOKAHEAD_BASE + self.LOOKAHEAD_GAIN * self.speed
@@ -672,6 +680,11 @@ class MapCar:
         tgt = self.route[min(self.wp_i + 1, len(self.route) - 1)]
         # 3. PURE PURSUIT: arahkan ke titik lookahead DI ATAS rute
         look = self._lookpoint(t)
+        # geser kanan (lajur kanan): rotasi +90 derajat pada vektor car->look
+        dxl, dyl = look[0] - self.x, look[1] - self.y
+        ll = math.hypot(dxl, dyl) + 1e-6
+        look = (look[0] + (-dyl / ll) * self.LANE_OFF,
+                look[1] + (dxl / ll) * self.LANE_OFF)
         desired = math.degrees(math.atan2(look[1] - self.y, look[0] - self.x))
         heading_err = (desired - self.heading + 180) % 360 - 180
         hw = w.seg_halfw(self.route[self.wp_i], self.route[self.wp_i + 1])
@@ -743,16 +756,19 @@ def map_brain(state):
         thr, brk = min(thr, 0.25), 0.0
     elif sharp > 20:
         thr = min(thr, 0.6)
-    # ACC: mobil depan deket -> longgar gas / rem
+    # ACC: mobil depan deket -> rem proporsional (jangan tibrung dari belakang)
     acc = ""
     if gap is not None:
-        if gap < 12:
+        if gap < 10:
             thr, brk = 0.0, 1.0
             acc = "REM!"
-        elif gap < 26:
-            thr = 0.0
+        elif gap < 20:
+            thr, brk = 0.0, 0.7
+            acc = "REM!"
+        elif gap < 35:
+            thr, brk = 0.0, 0.0
             acc = "ikut"
-        elif gap < 45:
+        elif gap < 60:
             thr = min(thr, 0.35)
             acc = "geser"
     # ANTI-STALL: nol speed + gak ada rintangan -> jangan deadlock di rem
@@ -996,7 +1012,9 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
     if heading is not None:
         car.heading = heading % 360.0
     signals = Signals(world, comp)
-    traffic = Traffic(world, comp, (sx, sy))
+    total_len = sum(math.hypot(s[2] - s[0], s[3] - s[1]) for s in world.segs)
+    n_ai = max(6, min(16, int(total_len / 700)))
+    traffic = Traffic(world, comp, (sx, sy), n=n_ai)
     mission = Mission(world, comp, start)
     first_ok = False
     if goal_coord:
@@ -1018,6 +1036,17 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
     zoom = cam.zoom
     off_frames = 0
     frames = 0
+
+    def purge_near(radius=130.0):
+        """Buang mobil AI sekitar hero (buat respawn misi biar gak nempel)."""
+        for j, tc in enumerate(traffic.cars):
+            if math.hypot(tc["x"] - car.x, tc["y"] - car.y) < radius:
+                cand = [c2 for c2 in traffic.cars
+                        if math.hypot(c2["x"] - car.x, c2["y"] - car.y) > radius + 150]
+                if cand:
+                    traffic.cars[j] = dict(random.choice(cand))
+
+    stall_frames = 0
     for fi in range(total):
         state = car.sense()
         # safety-net: keluar jalur > 35m -> snap balik ke rute
@@ -1062,14 +1091,35 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
                         mission.red_cd[si_best] = fi
         car.step(steer, thr, brk)
         mission.driven += car.speed
+        # deadlock breaker: berhenti total + rintangan nempel -> pindahkan rintangan
+        if car.speed < 0.15 and state["ahead_gap"] is not None and state["ahead_gap"] < 15:
+            stall_frames += 1
+        else:
+            stall_frames = 0
+        if stall_frames > 240:
+            stall_frames = 0
+            best_j, best_d = -1, 70.0
+            for j, tc in enumerate(traffic.cars):
+                d = math.hypot(tc["x"] - car.x, tc["y"] - car.y)
+                if d < best_d:
+                    best_j, best_d = j, d
+            if best_j >= 0:
+                cand = [c2 for c2 in traffic.cars
+                        if math.hypot(c2["x"] - car.x, c2["y"] - car.y) > 400]
+                if cand:
+                    traffic.cars[best_j] = dict(random.choice(cand))
         signals.update()
-        traffic.update(signals)
+        traffic.update(signals, hero=(car.x, car.y))
         # tabrakan hero vs mobil AI
         if crash_cd > 0:
             crash_cd -= 1
         else:
             for j, tc in enumerate(traffic.cars):
-                if math.hypot(car.x - tc["x"], car.y - tc["y"]) < 15:
+                dx_, dy_ = tc["x"] - car.x, tc["y"] - car.y
+                fwd = dx_ * fx_ + dy_ * fy_
+                lat = abs(-dx_ * fy_ + dy_ * fx_)
+                # tabrak beneran: hampir sejajar (satu lajur) & berimpit
+                if lat < 4.5 and -6 < fwd < 9:
                     mission.crashes += 1
                     car.speed *= 0.3
                     old = traffic.cars[j]
@@ -1100,6 +1150,7 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
             if not mission.new(near, car):
                 print("gak ada tujuan baru — selesai", file=sys.stderr)
                 break
+            purge_near()
         if headless and fi % 2 == 0:
             pygame.image.save(surf, os.path.join(frames_dir, f"f{fi:05d}.png"))
         if not headless:
@@ -1168,6 +1219,8 @@ def main():
     mapfile = None
     if "--map" in args:
         mapfile = args[args.index("--map") + 1]
+        if mapfile == "loop":
+            mapfile = os.path.join("maps", "loop_city.json")
     start_coord = parse_ll(args[args.index("--start") + 1]) if "--start" in args else None
     goal_coord = parse_ll(args[args.index("--goal") + 1]) if "--goal" in args else None
     heading = float(args[args.index("--heading") + 1]) if "--heading" in args else None
