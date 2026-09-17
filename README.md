@@ -1,8 +1,8 @@
-# MiniDrive-Jev 🚗💨
+# Gee-MiniDrive 🚗💨
 
 Simulasi nyetir 2D top-down: **1 mobil autonomous** keliling sirkuit dengan *System-One decision loop* — inspirasi dari [demo "rebuilt Tesla FSD with Jev"](https://x.com/jpschroeder/status/2100347770867458384) (TypeSafe AI's Jev model).
 
-![MiniDrive-Jev](assets/logo-both.png)
+![Gee-MiniDrive](assets/logo-both.png)
 
 ![gameplay](docs/demo.png)
 

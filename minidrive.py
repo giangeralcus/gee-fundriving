@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-MiniDrive-Jev — sim nyetir 2D top-down ala demo FSD/Jev.
+Gee-MiniDrive — sim nyetir 2D top-down ala demo FSD/Jev.
 
 Konsep "System One decision loop":
 - Tiap tick, mobil mengukur STATE (jarak sensor 5 arah + sudut vs tengah jalan + kecepatan)
@@ -224,7 +224,7 @@ def main():
     for i, a in enumerate(sys.argv):
         if a == "--seconds":
             seconds = int(sys.argv[i + 1])
-    outdir = os.path.expanduser("~/minidrive")
+    outdir = os.path.expanduser("~/gee-minidrive")
     os.makedirs(outdir, exist_ok=True)
 
     if headless:
@@ -232,7 +232,7 @@ def main():
     pygame.init()
     surf = pygame.Surface((W, H)) if headless else pygame.display.set_mode((W, H))
     if not headless:
-        pygame.display.set_caption("MiniDrive-Jev")
+        pygame.display.set_caption("Gee-MiniDrive")
     clock = pygame.time.Clock()
 
     car = Car()
@@ -266,7 +266,7 @@ def main():
     pygame.quit()
 
     if headless:
-        mp4 = os.path.join(outdir, "minidrive_demo.mp4")
+        mp4 = os.path.join(outdir, "gee_minidrive_demo.mp4")
         subprocess.run([
             "ffmpeg", "-y", "-loglevel", "error", "-framerate", "30",
             "-i", os.path.join(frames_dir, "f%05d.png"),
