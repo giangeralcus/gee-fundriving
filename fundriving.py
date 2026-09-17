@@ -4,11 +4,13 @@ Gee-FunDriving — sim nyetir 2D top-down.
 
 MODE:
 1. Sirkuit (default)     : track oval, brain rule-based System-One loop.
-2. Peta OSM (--map FILE) : peta jalan asli (mis. Puri Indah dari OSM),
-                           mobil ikut rute jalan pakai waypoint-following,
-                           kamera mengikuti mobil. [W] pan, zoom [-/+] ; [R] reset.
+2. Peta OSM (--map FILE) : dunia kota nyata (jalan per-tipe, bangunan, area
+                           hijau/air, lampu lalu lintas, mobil AI, nama jalan)
+                           + mode misi: antar sampai tujuan, dinilai vs rute
+                           terpendek. Kamera ikut mobil.
+                           Keys: [ESC] keluar, [-][=] zoom, [R] misi baru.
 
-Headless: rekam MP4.
+Headless: rekam MP4 (butuh ffmpeg).
 """
 import json
 import math
@@ -134,7 +136,7 @@ def draw_circuit(surf, car, state, dec, stats):
                          (RX + ROAD_W / 2) * 2, (RY + ROAD_W / 2) * 2))
     pygame.draw.ellipse(surf, (24, 26, 32),
                         (CX - RX + ROAD_W / 2, CY - RY + ROAD_W / 2,
-                         (RX - ROAD_W / 2) * 2, (RY - ROAD_W / 2) * 2))
+                         (RX - ROAD_W / 2) * 2, (RY + ROAD_W / 2) * 2))
     for i in range(0, 64, 2):
         x, y = track_center(i / 64)
         pygame.draw.circle(surf, (90, 94, 104), (int(x), int(y)), 2)
@@ -164,14 +166,13 @@ def hud(surf, lines):
 
 # ---------------------------------------------------------------- OSM map ---
 class OSMWorld:
-    """Peta jalan dari OSM: graf node/way + rute waypoint buat mobil."""
+    """Dunia dari OSM: graf jalan + bangunan + area + rute A* buat mobil."""
 
     def __init__(self, path):
         with open(path) as f:
             d = json.load(f)
         self.meta = d["meta"]
         self.nodes = {int(k): tuple(v) for k, v in d["nodes"].items()}
-        # adjacency
         self.adj = {}
         self.halfw = {}
         self.way_name = {}
@@ -182,13 +183,14 @@ class OSMWorld:
             for a, b in zip(pts, pts[1:]):
                 self.adj.setdefault(a, set()).add(b)
                 self.adj.setdefault(b, set()).add(a)
-                # simpan half-width minimal per node pair utk collision
                 self._wmin(a, b, wd)
-        self.halfw = {}
         xs = [p[0] for p in self.nodes.values()]
         ys = [p[1] for p in self.nodes.values()]
         self.minx, self.maxx = min(xs), max(xs)
         self.miny, self.maxy = min(ys), max(ys)
+        self._build_segments(d)
+        self._build_polys(d)
+        self._build_named_segs(d)
 
     def _wmin(self, a, b, wd):
         k = (min(a, b), max(a, b))
@@ -198,15 +200,69 @@ class OSMWorld:
     def seg_halfw(self, a, b):
         return self.halfw.get((min(a, b), max(a, b)), 5.0)
 
-    def nearest_node(self, x, y):
+    def _build_segments(self, d):
+        """Precompute segmen jalan utk render cepat: (ax,ay,bx,by,hw,kind)."""
+        kind_by_road = {r["id"]: r.get("kind", "residential") for r in d["roads"]}
+        self.segs = []
+        seen = set()
+        for r in d["roads"]:
+            pts = r["points"]
+            wd = r.get("width", 10) / 2
+            kind = r.get("kind", "residential")
+            for a, b in zip(pts, pts[1:]):
+                k = (min(a, b), max(a, b))
+                if k in seen:
+                    continue
+                seen.add(k)
+                ax, ay = self.nodes[a]
+                bx, by = self.nodes[b]
+                self.segs.append((ax, ay, bx, by, wd, kind, k))
+        self.seg_kind = kind_by_road
+
+    def _build_polys(self, d):
+        """Bangunan & area: (bbox, pts) biar gampang di-cull kamera."""
+        def bbox(pts):
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            return (min(xs), min(ys), max(xs), max(ys))
+        self.buildings = []
+        for pts in d.get("buildings", []):
+            if len(pts) >= 3:
+                self.buildings.append((bbox(pts), pts))
+        self.areas = []
+        for a in d.get("areas", []):
+            pts = a.get("pts", [])
+            if len(pts) >= 3:
+                self.areas.append((bbox(pts), pts, a.get("k", "green")))
+
+    def _build_named_segs(self, d):
+        """Segmen bernama utk label nama jalan: (ax,ay,bx,by,name)."""
+        self.named_segs = []
+        seen = set()
+        for r in d.get("roads", []):
+            nm = r.get("name", "")
+            if not nm:
+                continue
+            pts = r["points"]
+            for a, b in zip(pts, pts[1:]):
+                k = (min(a, b), max(a, b))
+                if k in seen:
+                    continue
+                seen.add(k)
+                ax, ay = self.nodes[a]
+                bx, by = self.nodes[b]
+                self.named_segs.append((ax, ay, bx, by, nm))
+
+    def nearest_node(self, x, y, subset=None):
         best, bd = None, 1e18
-        for nid, (nx, ny) in self.nodes.items():
+        src = subset if subset is not None else self.nodes
+        for nid in src:
+            nx, ny = self.nodes[nid]
             d = (nx - x) ** 2 + (ny - y) ** 2
             if d < bd:
                 best, bd = nid, d
         return best
 
-    # --- route: BFS sederhana node start -> goal (bobot = jarak euclid) ---
     def route(self, start, goal):
         import heapq
         dist = {start: 0.0}
@@ -234,6 +290,212 @@ class OSMWorld:
         return list(reversed(path))
 
 
+class Signals:
+    """Lampu lalu lintas di simpang (derajat >= 4). Fase bergantian
+    sumbu horizontal (0) / vertikal (1)."""
+
+    CYCLE = 420  # frame per fase (7s @60fps)
+
+    def __init__(self, world, comp):
+        self.world = world
+        self.nodes = set()
+        for n in comp:
+            if len(world.adj.get(n, ())) >= 4:
+                self.nodes.add(n)
+        self.frame = 0
+
+    def axis_of(self, ax, ay, bx, by):
+        return 0 if abs(bx - ax) >= abs(by - ay) else 1
+
+    def green(self, node, axis):
+        if node not in self.nodes:
+            return True
+        return (self.frame // self.CYCLE) % 2 == axis
+
+    def update(self):
+        self.frame += 1
+
+    def draw(self, surf, cam):
+        z = cam.zoom
+        for n in self.nodes:
+            nx, ny = cam.apply(*self.world.nodes[n])
+            if not (-20 < nx < W + 20 and -20 < ny < H + 20):
+                continue
+            ph = (self.frame // self.CYCLE) % 2
+            pygame.draw.circle(surf, (230, 80, 80) if ph == 0 else (90, 220, 110), (int(nx), int(ny)), 3)
+            pygame.draw.circle(surf, (90, 220, 110) if ph == 0 else (230, 80, 80),
+                               (int(nx) + 5, int(ny)), 3)
+
+
+class Traffic:
+    """Mobil AI: jalan random-walk di graf, lane kanan, hormati lampu merah."""
+
+    def __init__(self, world, comp, avoid_xy, n=16):
+        self.world = world
+        self.cars = []
+        self.comp = list(comp)
+        segs = list(world.halfw.keys())
+        random.shuffle(segs)
+        for k in segs:
+            if len(self.cars) >= n:
+                break
+            a, b = k
+            if a not in comp or b not in comp:
+                continue
+            ax, ay = world.nodes[a]
+            if math.hypot(ax - avoid_xy[0], ay - avoid_xy[1]) < 180:
+                continue
+            self.cars.append(self._mk(a, b))
+        self._lane(world)
+
+    def _mk(self, a, b):
+        w = self.world
+        ax, ay = w.nodes[a]
+        bx, by = w.nodes[b]
+        L = max(math.hypot(bx - ax, by - ay), 1.0)
+        t = random.uniform(0.05, 0.95)
+        ang = math.atan2(by - ay, bx - ax)
+        return {"a": a, "b": b, "t": t, "L": L,
+                "x": ax + (bx - ax) * t, "y": ay + (by - ay) * t,
+                "heading": math.degrees(ang),
+                "base": random.uniform(1.5, 2.6), "speed": 0.0}
+
+    def _lane(self, w):
+        for c in self.cars:
+            self._apply_lane(c, w)
+
+    def _apply_lane(self, c, w):
+        ax, ay = w.nodes[c["a"]]
+        bx, by = w.nodes[c["b"]]
+        dx, dy = bx - ax, by - ay
+        L = c["L"]
+        off = w.seg_halfw(c["a"], c["b"]) * 0.45
+        px, py = -dy / L, dx / L   # kanan arah jalan (y-down)
+        c["x"] += px * off
+        c["y"] += py * off
+
+    def _next_edge(self, c):
+        w = self.world
+        b = c["b"]
+        nbrs = list(w.adj.get(b, ()))
+        if len(nbrs) > 1:
+            nbrs = [v for v in nbrs if v != c["a"]] or nbrs
+        nb = random.choice(nbrs)
+        nc = self._mk(b, nb)
+        nc["base"] = c["base"]
+        return nc
+
+    def update(self, signals):
+        w = self.world
+        # indeks leader per segmen terarah
+        on_edge = {}
+        for i, c in enumerate(self.cars):
+            on_edge.setdefault((c["a"], c["b"]), []).append((c["t"], i))
+        for lst in on_edge.values():
+            lst.sort()
+        for i, c in enumerate(self.cars):
+            # cari leader di segmen sama
+            tgt_speed = c["base"]
+            for t_other, j in on_edge.get((c["a"], c["b"]), ()):
+                if j != i and t_other > c["t"]:
+                    gap = (t_other - c["t"]) * c["L"]
+                    if gap < 24:
+                        tgt_speed = 0.0
+                        break
+            # lampu merah di node tujuan
+            if c["b"] in signals.nodes:
+                dist_node = (1.0 - c["t"]) * c["L"]
+                ax, ay = w.nodes[c["a"]]
+                bx, by = w.nodes[c["b"]]
+                axis = signals.axis_of(ax, ay, bx, by)
+                if 8 < dist_node < 34 and not signals.green(c["b"], axis):
+                    tgt_speed = 0.0
+            c["speed"] = tgt_speed
+            c["t"] += c["speed"] / c["L"]
+            if c["t"] >= 1.0:
+                nc = self._next_edge(c)
+                c["a"], c["b"], c["t"], c["L"] = nc["a"], nc["b"], 0.0, nc["L"]
+                ax, ay = w.nodes[c["a"]]
+                bx, by = w.nodes[c["b"]]
+                c["heading"] = math.degrees(math.atan2(by - ay, bx - ax))
+            ax, ay = w.nodes[c["a"]]
+            bx, by = w.nodes[c["b"]]
+            t = c["t"]
+            px, py = ax + (bx - ax) * t, ay + (by - ay) * t
+            L = c["L"]
+            off = w.seg_halfw(c["a"], c["b"]) * 0.45
+            dx, dy = bx - ax, by - ay
+            c["x"], c["y"] = px + (-dy / L) * off, py + (dx / L) * off
+
+    def draw(self, surf, cam):
+        z = cam.zoom
+        for c in self.cars:
+            sx, sy = cam.apply(c["x"], c["y"])
+            if not (-40 < sx < W + 40 and -40 < sy < H + 40):
+                continue
+            a = math.radians(c["heading"])
+            pts = [(sx + dx * math.cos(a) * z - dy * math.sin(a) * z,
+                    sy + dx * math.sin(a) * z + dy * math.cos(a) * z)
+                   for dx, dy in ((11, 0), (-9, 6), (-9, -6))]
+            pygame.draw.polygon(surf, (235, 165, 75), pts)
+
+
+class Mission:
+    """Misi antar: tujuan acak 500-2600m, skor = (terpendek/driven)*1000
+    - 40/lampu merah - 25/tabrakan."""
+
+    def __init__(self, world, comp, from_node):
+        self.world = world
+        self.comp = comp
+        self.n = 0
+        self.score = 0
+        self.reds = 0
+        self.crashes = 0
+        self.red_cd = {}
+        self.goal = None
+        self.route_len = 0.0
+        self.driven = 0.0
+        self.done = False
+        self.from_node = from_node
+
+    def route_len_of(self, route):
+        w = self.world
+        return sum(math.hypot(w.nodes[b][0] - w.nodes[a][0], w.nodes[b][1] - w.nodes[a][1])
+                   for a, b in zip(route, route[1:]))
+
+    def new(self, from_node, car):
+        w = self.world
+        fx, fy = w.nodes[from_node]
+        pool = random.sample(sorted(self.comp), min(500, len(self.comp)))
+        cands = [n for n in pool
+                 if 500 < math.hypot(w.nodes[n][0] - fx, w.nodes[n][1] - fy) < 2600]
+        random.shuffle(cands)
+        for goal in cands[:12]:
+            r = w.route(from_node, goal)
+            if len(r) >= 4:
+                self.goal = goal
+                self.route_len = self.route_len_of(r)
+                self.driven = 0.0
+                self.reds = 0
+                self.crashes = 0
+                self.done = False
+                self.red_cd = {}
+                car.route = r
+                car.wp_i = 1
+                car.finished = False
+                car._init_heading()
+                return True
+        return False
+
+    def complete(self, car):
+        base = round(self.route_len / max(self.driven, 1.0) * 1000)
+        pts = max(50, base - 40 * self.reds - 25 * self.crashes)
+        self.score += pts
+        self.n += 1
+        self.done = True
+        return pts
+
+
 class MapCar:
     """Mobil di peta OSM: follow rute node; steering PD ke waypoint aktif."""
 
@@ -259,7 +521,6 @@ class MapCar:
         self.heading = math.degrees(math.atan2(wp[1] - self.y, wp[0] - self.x))
 
     def _lookpoint(self):
-        """Titik lookahead di sepanjang rute."""
         w = self.world
         acc = 0.0
         i = max(0, self.wp_i - 1)
@@ -276,7 +537,6 @@ class MapCar:
         return w.nodes[self.route[-1]]
 
     def sense(self):
-        # advance waypoint: maju kalau sudah dekat (< 28m) atau sudah lewat
         w = self.world
         while self.wp_i < len(self.route) - 1:
             tgt = w.nodes[self.route[self.wp_i]]
@@ -285,10 +545,8 @@ class MapCar:
             else:
                 break
         tgt = w.nodes[self.route[self.wp_i]]
-        # sudut ke target vs heading sekarang
         desired = math.degrees(math.atan2(tgt[1] - self.y, tgt[0] - self.x))
         heading_err = (desired - self.heading + 180) % 360 - 180
-        # lateral error: jarak ke segmen rute aktif
         seg_i = max(0, min(self.wp_i, len(self.route) - 2))
         ax, ay = w.nodes[self.route[seg_i]]
         bx, by = w.nodes[self.route[seg_i + 1]]
@@ -324,14 +582,11 @@ class MapCar:
 
 
 def map_brain(state):
-    """Steering: proporsional heading error ke waypoint (sign benar:
-    err positif = target di kiri arah mobil => belok kiri (negatif)).
-    Perlambat saat heading error besar."""
     he = state["heading_err"]
     steer = max(-1.0, min(1.0, he / 40.0))
     sharp = abs(he)
     if sharp > 90:
-        thr, brk = 0.0, 1.0   # hampir balik arah: rem + putar di tempat
+        thr, brk = 0.0, 1.0
     elif sharp > 45:
         thr, brk = 0.25, 0.0
     elif sharp > 20:
@@ -342,7 +597,6 @@ def map_brain(state):
 
 
 def largest_component(world):
-    """Return set node dari connected component terbesar."""
     best = set()
     seen = set()
     for n0 in world.adj:
@@ -367,6 +621,7 @@ class Camera:
         self.x = 0.0
         self.y = 0.0
         self.zoom = 0.55
+
     def apply(self, x, y):
         return ((x - self.x) * self.zoom + W / 2,
                 (y - self.y) * self.zoom + H / 2)
@@ -376,50 +631,259 @@ class Camera:
         self.y += (y - self.y) * lerp
 
 
-def draw_map(surf, world, car, cam, state, dec, stats):
-    surf.fill((30, 32, 38))
-    # latar blok kota sederhana: gambar semua road
+# ---- render dunia berlapis -------------------------------------------------
+COL_BG = (26, 28, 34)
+COL_GREEN = (44, 60, 46)
+COL_WATER = (36, 52, 80)
+COL_BLDG = (42, 45, 54)
+COL_BLDG_EDGE = (54, 58, 68)
+COL_CASING = (52, 55, 64)
+COL_ROAD = (88, 92, 104)
+COL_ROAD_MAJOR = (100, 104, 118)
+COL_ROUTE = (80, 140, 230)
+COL_ROUTE_CASE = (28, 58, 118)
+
+
+def draw_world(surf, world, cam):
     z = cam.zoom
-    lw = max(1, int(2))
-    for rid, name in list(world.way_name.items())[:0]:
-        pass
-    # gambar jalan: iterate adjacency pairs (pakai halfw utk width)
-    drawn = set()
-    for a, nbrs in world.adj.items():
-        ax, ay = cam.apply(*world.nodes[a])
-        if not (-80 < ax < W + 80 and -80 < ay < H + 80):
+    vw = W / z / 2 + 60
+    vh = H / z / 2 + 60
+    x0, x1 = cam.x - vw, cam.x + vw
+    y0, y1 = cam.y - vh, cam.y + vh
+    surf.fill(COL_BG)
+    for bbox, pts, kind in world.areas:
+        bx0, by0, bx1, by1 = bbox
+        if bx1 < x0 or bx0 > x1 or by1 < y0 or by0 > y1:
             continue
-        for b in nbrs:
-            k = (min(a, b), max(a, b))
-            if k in drawn:
-                continue
-            drawn.add(k)
-            bx, by = cam.apply(*world.nodes[b])
-            hw = world.seg_halfw(a, b) * z
-            pygame.draw.line(surf, (70, 74, 86), (ax, ay), (bx, by), max(2, int(hw * 2)))
-    # rute
+        pygame.draw.polygon(surf, COL_WATER if kind == "water" else COL_GREEN,
+                            [cam.apply(*p) for p in pts])
+    for bbox, pts in world.buildings:
+        bx0, by0, bx1, by1 = bbox
+        if bx1 < x0 or bx0 > x1 or by1 < y0 or by0 > y1:
+            continue
+        p = [cam.apply(*pt) for pt in pts]
+        pygame.draw.polygon(surf, COL_BLDG, p)
+        pygame.draw.polygon(surf, COL_BLDG_EDGE, p, 1)
+    for ax, ay, bx, by, wd, kind, _k in world.segs:
+        if max(ax, bx) < x0 or min(ax, bx) > x1 or max(ay, by) < y0 or min(ay, by) > y1:
+            continue
+        a = cam.apply(ax, ay)
+        b = cam.apply(bx, by)
+        hw = wd * z
+        pygame.draw.line(surf, COL_CASING, a, b, max(2, int(hw * 2 + 2)))
+        col = COL_ROAD_MAJOR if wd >= 7.5 else COL_ROAD
+        pygame.draw.line(surf, col, a, b, max(1, int(hw * 2)))
+
+
+def draw_street_name(surf, world, cam, car, cached):
+    """Nama jalan terdekat (<=60m) digambar di dekat mobil. cache tiap 15 frame."""
+    age, name = cached
+    if age == 0:
+        best, bd = "", 60.0
+        for ax, ay, bx, by, nm in world.named_segs:
+            abx, aby = bx - ax, by - ay
+            apx, apy = car.x - ax, car.y - ay
+            ab2 = abx * abx + aby * aby + 1e-6
+            tt = max(0.0, min(1.0, (apx * abx + apy * aby) / ab2))
+            cx, cy = ax + abx * tt, ay + aby * tt
+            d = math.hypot(car.x - cx, car.y - cy)
+            if d < bd:
+                best, bd = nm, d
+        name = best or name
+    sx, sy = cam.apply(car.x, car.y)
+    try:
+        font = pygame.font.SysFont("dejavusansbold", 13)
+        label = font.render(name, True, (235, 235, 235))
+        pad = 6
+        r = label.get_rect()
+        bg = pygame.Rect(int(sx) - r.w // 2 - pad, int(sy) - 38, r.w + pad * 2, r.h + 4)
+        pygame.draw.rect(surf, (20, 22, 28), bg, border_radius=4)
+        surf.blit(label, (bg.x + pad, bg.y + 2))
+    except Exception:
+        pass
+    return name
+
+
+def draw_map(surf, world, car, cam, state, dec, stats, traffic, signals, mission, name_cache):
+    draw_world(surf, world, cam)
+    # rute (casing + garis)
     if len(car.route) > 1:
-        pts = [cam.apply(*world.nodes[n]) for n in car.route[:: max(1, len(car.route) // 400)]]
-        pygame.draw.lines(surf, (70, 130, 220), False, pts, 2)
+        step = max(1, len(car.route) // 400)
+        pts = [cam.apply(*world.nodes[n]) for n in car.route[::step]]
+        pygame.draw.lines(surf, COL_ROUTE_CASE, False, pts, 6)
+        pygame.draw.lines(surf, COL_ROUTE, False, pts, 3)
     # waypoint aktif
     wp = cam.apply(*state["wp"])
     pygame.draw.circle(surf, (240, 200, 80), (int(wp[0]), int(wp[1])), 5)
-    # mobil
+    signals.draw(surf, cam)
+    traffic.draw(surf, cam)
+    # target misi (denyut)
+    if mission.goal is not None:
+        gx, gy = cam.apply(*world.nodes[mission.goal])
+        t = pygame.time.get_ticks() / 1000.0
+        r = 8 + int(3 * math.sin(t * 4))
+        pygame.draw.circle(surf, (255, 120, 200), (int(gx), int(gy)), r, 2)
+        pygame.draw.circle(surf, (255, 120, 200), (int(gx), int(gy)), 2)
+    # mobil hero
     cx, cy = cam.apply(car.x, car.y)
     a = math.radians(car.heading)
+    z = cam.zoom
     pts = [(cx + dx * math.cos(a) * z - dy * math.sin(a) * z,
             cy + dx * math.sin(a) * z + dy * math.cos(a) * z)
            for dx, dy in ((CAR_LEN / 2, 0), (-CAR_LEN / 2, CAR_W / 2), (-CAR_LEN / 2, -CAR_W / 2))]
     col = (80, 220, 120) if not car.finished else (90, 160, 255)
     pygame.draw.polygon(surf, col, pts)
+    # nama jalan
+    name = draw_street_name(surf, world, cam, car, name_cache)
+    # HUD
+    gdist = 0
+    if mission.goal is not None:
+        gx, gy = world.nodes[mission.goal]
+        gdist = math.hypot(car.x - gx, car.y - gy)
     hud(surf, [
         f"Gee-FunDriving | {world.meta['name']}",
         f"speed {car.speed:.1f}  alive {car.alive_time // FPS}s  wp {car.wp_i}/{len(car.route)}",
-        f"he {dec.get('he', 0):.0f}  lat {dec.get('lat', 0):.0f}m  {stats}",
-    ])
+        f"he {dec.get('he', 0):.0f}  lat {dec.get('lat', 0):.0f}m  {name}",
+        f"misi #{mission.n + 1} -> {gdist:.0f}m | skor {mission.score} | merah {mission.reds} tabrak {mission.crashes}",
+    ] + ([stats] if stats else []))
 
 
 # ---------------------------------------------------------------- driver ----
+def run_map(mapfile, headless, seconds, surf, clock, outdir):
+    frames_dir = os.path.join(outdir, "frames")
+    if headless:
+        os.makedirs(frames_dir, exist_ok=True)
+        for f in os.listdir(frames_dir):
+            os.remove(os.path.join(frames_dir, f))
+    world = OSMWorld(mapfile)
+    comp = largest_component(world)
+    start = min(comp, key=lambda n: world.nodes[n][0])
+    sx, sy = world.nodes[start]
+    goal = max(comp, key=lambda n: (world.nodes[n][0] - sx) ** 2 + (world.nodes[n][1] - sy) ** 2)
+    route = world.route(start, goal)
+    if len(route) < 2:
+        print("rute gak ketemu — coba bbox lain")
+        sys.exit(1)
+    car = MapCar(world, start, route)
+    signals = Signals(world, comp)
+    traffic = Traffic(world, comp, (sx, sy))
+    mission = Mission(world, comp, start)
+    mission.new(start, car)
+    print(f"route: {len(route)} wp | lampu {len(signals.nodes)} | mobil AI {len(traffic.cars)}",
+          file=sys.stderr)
+    cam = Camera()
+    cam.x, cam.y = car.x, car.y
+    name_cache = [0, ""]
+    total = FPS * seconds
+    crash_cd = 0
+    zoom = cam.zoom
+    for fi in range(total):
+        state = car.sense()
+        steer, thr, brk, dec = map_brain(state)
+        # berhenti di lampu merah: cek node tujuan aktif
+        tgt = car.route[min(car.wp_i, len(car.route) - 1)]
+        if tgt in signals.nodes:
+            tx, ty = world.nodes[tgt]
+            d = math.hypot(car.x - tx, car.y - ty)
+            axis = 0 if abs(math.cos(math.radians(car.heading))) >= abs(math.sin(math.radians(car.heading))) else 1
+            if 6 < d < 40 and not signals.green(tgt, axis):
+                thr, brk = 0.0, 1.0
+            # nyabrang merah: nempel node + masih merah + gerak
+            if d < 9 and not signals.green(tgt, axis) and car.speed > 1.0:
+                last = mission.red_cd.get(tgt, -9999)
+                if fi - last > 240:
+                    mission.reds += 1
+                    mission.red_cd[tgt] = fi
+        car.step(steer, thr, brk)
+        mission.driven += car.speed
+        signals.update()
+        traffic.update(signals)
+        # tabrakan hero vs mobil AI
+        if crash_cd > 0:
+            crash_cd -= 1
+        else:
+            for j, tc in enumerate(traffic.cars):
+                if math.hypot(car.x - tc["x"], car.y - tc["y"]) < 15:
+                    mission.crashes += 1
+                    car.speed *= 0.3
+                    old = traffic.cars[j]
+                    cand = [c2 for c2 in traffic.cars
+                            if math.hypot(c2["x"] - car.x, c2["y"] - car.y) > 400]
+                    if cand:
+                        repl = random.choice(cand)
+                        traffic.cars[j] = dict(repl)
+                        traffic.cars[traffic.cars.index(repl)] = old
+                    crash_cd = 45
+                    break
+        cam.follow(car.x, car.y)
+        cam.zoom = zoom
+        name_cache[0] = (name_cache[0] + 1) % 15
+        draw_map(surf, world, car, cam, state, dec, "",
+                 traffic, signals, mission, name_cache)
+        # misi selesai -> skor + misi baru
+        if car.finished:
+            pts = mission.complete(car)
+            print(f"misi #{mission.n} selesai +{pts} (skor {mission.score}) "
+                  f"merah {mission.reds} tabrak {mission.crashes}", file=sys.stderr)
+            if headless:
+                break
+            near = world.nearest_node(car.x, car.y, comp)
+            if not mission.new(near, car):
+                print("gak ada tujuan baru — selesai", file=sys.stderr)
+                break
+        if headless and fi % 2 == 0:
+            pygame.image.save(surf, os.path.join(frames_dir, f"f{fi:05d}.png"))
+        if not headless:
+            for ev in pygame.event.get():
+                if ev.type == pygame.QUIT:
+                    return "quit"
+                if ev.type == pygame.KEYDOWN:
+                    if ev.key == pygame.K_ESCAPE:
+                        return "quit"
+                    if ev.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
+                        zoom = min(1.6, zoom * 1.15)
+                    if ev.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+                        zoom = max(0.25, zoom / 1.15)
+                    if ev.key == pygame.K_r:
+                        near = world.nearest_node(car.x, car.y, comp)
+                        mission.new(near, car)
+            pygame.event.pump()
+            pygame.display.flip()
+            clock.tick(FPS)
+    if headless:
+        mp4 = os.path.join(outdir, "gee_fundriving_demo.mp4")
+        subprocess.run([
+            "ffmpeg", "-y", "-loglevel", "error", "-f", "image2",
+            "-pattern_type", "glob", "-i", os.path.join(frames_dir, "f*.png"),
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "23", mp4,
+        ], check=True)
+        print("VIDEO_OK", mp4)
+    print(f"skor akhir {mission.score} | misi selesai {mission.n} | "
+          f"merah {mission.reds} tabrak {mission.crashes} | alive {car.alive_time // FPS}s")
+
+
+def run_circuit(headless, seconds, surf, clock):
+    car = CircuitCar()
+    total = FPS * seconds
+    for fi in range(total):
+        state = car.sense()
+        steer, thr, brk, dec = brain_decide(state)
+        car.step(steer, thr, brk)
+        if not car.frame_alive:
+            car.reset()
+        draw_circuit(surf, car, state, dec, "")
+        if not headless:
+            for ev in pygame.event.get():
+                if ev.type == pygame.QUIT:
+                    pygame.quit()
+                    return
+            pygame.event.pump()
+            pygame.display.flip()
+            clock.tick(FPS)
+    pygame.quit()
+    print(f"selesai: laps {car.laps:.2f}")
+
+
 def main():
     args = sys.argv[1:]
     headless = "--headless" in args
@@ -441,77 +905,11 @@ def main():
         pygame.display.set_caption("Gee-FunDriving")
     clock = pygame.time.Clock()
 
-    frames_dir = os.path.join(outdir, "frames")
-    if headless:
-        os.makedirs(frames_dir, exist_ok=True)
-        for f in os.listdir(frames_dir):
-            os.remove(os.path.join(frames_dir, f))
-
-    cam = Camera()
     if mapfile:
-        world = OSMWorld(mapfile)
-        # spawn/goal: ambil node terbesar-degree di barat & timur dari komponen
-        # terbesar (graf OSM kadang punya pulau terpisah -> BFS fail)
-        comp = largest_component(world)
-        start = min(comp, key=lambda n: world.nodes[n][0])
-        sx, sy = world.nodes[start]
-        goal = max(comp, key=lambda n: (world.nodes[n][0] - sx) ** 2 + (world.nodes[n][1] - sy) ** 2)
-        route = world.route(start, goal)
-        if len(route) < 2:
-            print("rute gak ketemu — coba bbox lain")
-            sys.exit(1)
-        car = MapCar(world, start, route)
-        print(f"route: {len(route)} nodes, {sum(1 for _ in route)} wp | start {start} goal {goal}",
-              file=sys.stderr)
-        mode = "map"
-        cam.x, cam.y = car.x, car.y
+        run_map(mapfile, headless, seconds, surf, clock, outdir)
+        pygame.quit()
     else:
-        world = None
-        car = CircuitCar()
-        mode = "circuit"
-
-    total = FPS * seconds
-    for fi in range(total):
-        if mode == "circuit":
-            state = car.sense()
-            steer, thr, brk, dec = brain_decide(state)
-            car.step(steer, thr, brk)
-            if not car.frame_alive:
-                car.reset()
-            draw_circuit(surf, car, state, dec, "")
-        else:
-            state = car.sense()
-            steer, thr, brk, dec = map_brain(state)
-            car.step(steer, thr, brk)
-            cam.follow(car.x, car.y)
-            draw_map(surf, world, car, cam, state, dec,
-                     f"finished={car.finished}")
-            if car.finished and headless:
-                break
-        if headless and fi % 2 == 0:
-            pygame.image.save(surf, os.path.join(frames_dir, f"f{fi:05d}.png"))
-        if not headless:
-            for ev in pygame.event.get():
-                if ev.type == pygame.QUIT:
-                    pygame.quit()
-                    return
-            pygame.event.pump()
-            pygame.display.flip()
-            clock.tick(FPS)
-    pygame.quit()
-
-    if headless:
-        mp4 = os.path.join(outdir, "gee_fundriving_demo.mp4")
-        subprocess.run([
-            "ffmpeg", "-y", "-loglevel", "error", "-f", "image2",
-            "-pattern_type", "glob", "-i", os.path.join(frames_dir, "f*.png"),
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "23", mp4,
-        ], check=True)
-        print("VIDEO_OK", mp4)
-    if mode == "map":
-        print(f"selesai: wp {car.wp_i}/{len(car.route)} finished={car.finished} alive {car.alive_time // FPS}s")
-    else:
-        print(f"selesai: laps {car.laps:.2f}")
+        run_circuit(headless, seconds, surf, clock)
 
 
 if __name__ == "__main__":

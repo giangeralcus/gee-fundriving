@@ -6,24 +6,27 @@ Simulasi nyetir 2D top-down: **1 mobil autonomous** keliling sirkuit dengan *Sys
 
 ![gameplay](docs/demo.png)
 
-## Peta OSM (baru!)
+## Peta OSM (dunia kota + traffic + misi)
 
-Sim bisa jalan di **peta jalan asli** — misal daerah Puri Indah, Jakarta Barat:
+Sim jalan di **peta kota asli** — misal daerah Puri Indah, Jakarta Barat:
 
 ```bash
-# 1. Fetch jalan dari OpenStreetMap (sekali saja)
-python3 tools/fetch_osm.py        # -> maps/puri_indah.json (1137 jalan, 3.6x2.4 km)
+# 1. Fetch jalan + bangunan + area dari OpenStreetMap (sekali saja)
+python3 tools/fetch_osm.py        # -> maps/puri_indah.json (1137 jalan, 9.2rb bangunan, 3.6x2.9 km)
 
-# 2. Sim di peta asli: mobil otomatis cari rute barat->timur & nyetir sendiri
+# 2. Main di peta asli: mode misi, mobil AI, lampu merah
+python3 fundriving.py --map maps/puri_indah.json
+# headless (rekam MP4, butuh ffmpeg):
 python3 fundriving.py --map maps/puri_indah.json --headless --seconds 150
 ```
 
 Fitur map mode:
-- Graf jalan OSM (node/way) + pathfinding A*-like (heapq BFS berbobot)
-- Mobil follow rute pakai waypoint: steer proporsional sudut ke target,
-  rem otomatis di tikungan tajam (>90° = balik arah)
-- Kamera follow + render jalan sesuai lebar asli (tol 22m s/d gang 8m)
-- Hasil verifikasi: rute 92 waypoint, **finished=True** (sampai tujuan)
+- **Dunia berlapis**: jalan per-tipe (tol 22m s/d gang 8m) dengan casing, 9rb+ poligon bangunan, area hijau/air — semua dari OSM
+- **Mode misi**: tujuan acak 500–2600m, skor = rute terpendek ÷ rute ditempuh × 1000, −40/lampu merah, −25/tabrakan; selesai → auto misi baru
+- **Lalu lintas**: 16 mobil AI random-walk di graf jalan (lane kanan, jaga jarak) + 122 lampu lalu lintas siklus 7 detik — AI dan mobil lu sama-sama berhenti di merah, nyabrang kena denda
+- **Nama jalan** muncul di dekat mobil (label), pathfinding A*-like di graf OSM
+- **Kamera follow** + zoom `[-][=]`, `R` misi baru, `ESC` keluar
+- Headless verifikasi: misi #1 +912 poin (efisiensi rute 91%)
 
 Tambah peta daerah lain: ubah `LAT0/LON0/LAT1/LON1` di `tools/fetch_osm.py`.
 
