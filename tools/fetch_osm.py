@@ -28,8 +28,8 @@ PRESETS = {
         "out": "maps/puri_indah.json",
     },
     "puri-cengkareng": {
-        "bbox": (-6.1960, 106.7060, -6.1460, 106.7590),
-        "name": "Puri Indah - Cengkareng - Taman Palem, Jakarta Barat",
+        "bbox": (-6.1980, 106.7040, -6.1350, 106.7600),
+        "name": "Puri Indah - Cengkareng - Taman Palem - Green Sedayu, Jakarta Barat",
         "out": "maps/puri_cengkareng.json",
     },
 }
@@ -48,12 +48,25 @@ def build_query(lat0, lon0, lat1, lon1):
 out body qt;"""
 
 
+OVERPASS_ENDPOINTS = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+]
+
+
 def fetch(query, timeout=300):
-    url = "https://overpass-api.de/api/interpreter"
     data = urllib.parse.urlencode({"data": query}).encode()
-    req = urllib.request.Request(url, data=data, headers={"User-Agent": "GeeFunDriving/1.0"})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        return json.load(r)
+    last_err = None
+    for i, url in enumerate(OVERPASS_ENDPOINTS):
+        try:
+            req = urllib.request.Request(url, data=data, headers={"User-Agent": "GeeFunDriving/1.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.load(r)
+        except Exception as e:
+            last_err = e
+            print(f"endpoint {i+1} gagal ({e}) — coba mirror lain...", file=sys.stderr)
+    raise last_err
 
 
 def make_proj(lat0, lon0, lat1, lon1):

@@ -18,6 +18,7 @@ import json
 import math
 import os
 import random
+import shutil
 import subprocess
 import sys
 from collections import OrderedDict
@@ -168,16 +169,49 @@ def hud(surf, lines):
 
 
 # ---------------------------------------------------------------- OSM map ---
-CELL = 500  # ukuran sel spatial grid (meter) biar render gak terjerat peta raksasa
+CELL = 500
+
+def simplify(points, eps=12.0):
+    """Douglas-Peucker: raut poliline rute — bunuh zigzag antar lajur
+    ganda & nilai-niali node yang kepadatan, sisakan bentuk jalan."""
+    if len(points) < 3:
+        return list(points)
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+    while stack:
+        i0, i1 = stack.pop()
+        if i1 <= i0 + 1:
+            continue
+        ax, ay = points[i0]
+        bx, by = points[i1]
+        dx, dy = bx - ax, by - ay
+        n = math.hypot(dx, dy) + 1e-9
+        best, bi = -1.0, -1
+        for i in range(i0 + 1, i1):
+            px, py = points[i]
+            d = abs((px - ax) * dy - (py - ay) * dx) / n
+            if d > best:
+                best, bi = d, i
+        if best > eps:
+            keep[bi] = True
+            stack.append((i0, bi))
+            stack.append((bi, i1))
+    return [p for p, k in zip(points, keep) if k]
+
+
+  # ukuran sel spatial grid (meter) biar render gak terjerat peta raksasa
 
 
 class OSMWorld:
-    """Dunia dari OSM: graf jalan + bangunan + area + rute A* buat mobil."""
+    """Dunia dari OSM: graf jalan + bangunan + area + rute A* buat mobil.
+    width_scale: pengali lebar jalan logis (bikin nurut jalan lebih gampang)."""
 
-    def __init__(self, path):
+    def __init__(self, path, width_scale=1.0):
         with open(path) as f:
             d = json.load(f)
         self.meta = d["meta"]
+        self.width_scale = width_scale
         self.nodes = {int(k): tuple(v) for k, v in d["nodes"].items()}
         self.adj = {}
         self.halfw = {}
@@ -185,7 +219,7 @@ class OSMWorld:
         for r in d["roads"]:
             pts = r["points"]
             self.way_name[r["id"]] = r.get("name", "")
-            wd = r.get("width", 10) / 2
+            wd = r.get("width", 10) / 2 * width_scale
             for a, b in zip(pts, pts[1:]):
                 self.adj.setdefault(a, set()).add(b)
                 self.adj.setdefault(b, set()).add(a)
@@ -232,7 +266,7 @@ class OSMWorld:
         seen = set()
         for r in d["roads"]:
             pts = r["points"]
-            wd = r.get("width", 10) / 2
+            wd = r.get("width", 10) / 2 * self.width_scale
             kind = r.get("kind", "residential")
             for a, b in zip(pts, pts[1:]):
                 k = (min(a, b), max(a, b))
@@ -327,7 +361,12 @@ class Signals:
         for n in comp:
             if len(world.adj.get(n, ())) >= 4:
                 self.nodes.add(n)
+        self.node_list = sorted(self.nodes)
+        self.pos = [world.nodes[n] for n in self.node_list]
         self.frame = 0
+
+    def nodes_at(self, i):
+        return self.node_list[i]
 
     def axis_of(self, ax, ay, bx, by):
         return 0 if abs(bx - ax) >= abs(by - ay) else 1
@@ -476,6 +515,7 @@ class Mission:
         self.score = 0
         self.reds = 0
         self.crashes = 0
+        self.recovers = 0
         self.red_cd = {}
         self.goal = None
         self.route_len = 0.0
@@ -483,10 +523,8 @@ class Mission:
         self.done = False
         self.from_node = from_node
 
-    def route_len_of(self, route):
-        w = self.world
-        return sum(math.hypot(w.nodes[b][0] - w.nodes[a][0], w.nodes[b][1] - w.nodes[a][1])
-                   for a, b in zip(route, route[1:]))
+    def route_len_of(self, pts):
+        return sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(pts, pts[1:]))
 
     def new(self, from_node, car):
         w = self.world
@@ -498,8 +536,10 @@ class Mission:
         for goal in cands[:12]:
             r = w.route(from_node, goal)
             if len(r) >= 4:
-                self._set(from_node, goal, r, car)
-                return True
+                pts = simplify([w.nodes[n] for n in r], eps=12.0)
+                if len(pts) >= 3:
+                    self._set(goal, pts, car)
+                    return True
         return False
 
     def new_fixed(self, from_node, goal_node, car):
@@ -507,19 +547,21 @@ class Mission:
         r = self.world.route(from_node, goal_node)
         if len(r) < 2:
             return False
-        self._set(from_node, goal_node, r, car)
+        pts = simplify([self.world.nodes[n] for n in r], eps=12.0)
+        self._set(goal_node, pts, car)
         return True
 
-    def _set(self, from_node, goal, r, car):
+    def _set(self, goal, pts, car):
         self.goal = goal
-        self.route_len = self.route_len_of(r)
+        self.route_len = self.route_len_of(pts)
         self.driven = 0.0
         self.reds = 0
         self.crashes = 0
+        self.recovers = 0
         self.done = False
         self.red_cd = {}
-        car.route = r
-        car.wp_i = 1
+        car.route = pts
+        car.wp_i = 0
         car.finished = False
         car._init_heading()
 
@@ -533,16 +575,24 @@ class Mission:
 
 
 class MapCar:
-    """Mobil di peta OSM: follow rute node; steering PD ke waypoint aktif."""
+    """Mobil di peta OSM — PURE PURSUIT:
+    progres rute dihitung dari proyeksi posisi ke segmen rute aktif
+    (bukan radius lingkaran), steering menuju titik lookahead DI ATAS
+    rute. Mobil gak bisa "melahap" waypoint dari jalan sebelah."""
 
     MAXV = 4.2          # px/frame (~ 40 km/h pada scale)
     ACC = 0.05
-    LOOKAHEAD = 55.0    # jarak lookahead (px ~ meter)
+    LOOKAHEAD_BASE = 16  # lookahead dinamis: 16 + 6*speed (motong tikungan minim)
+    LOOKAHEAD_GAIN = 6.0
+    CAPTURE = 12.0      # radius capture kecil (toleransi ujung rute)
+
+    def _lookahead(self):
+        return self.LOOKAHEAD_BASE + self.LOOKAHEAD_GAIN * self.speed
 
     def __init__(self, world, start_node, route):
         self.world = world
         self.route = route
-        self.wp_i = 0
+        self.wp_i = 0        # indeks segmen progres (car di segmen wp_i -> wp_i+1)
         x, y = world.nodes[start_node]
         self.x, self.y = float(x), float(y)
         self.heading = 0.0
@@ -553,57 +603,87 @@ class MapCar:
         self._init_heading()
 
     def _init_heading(self):
-        wp = self._lookpoint()
+        wp = self._lookpoint(0.0)
         self.heading = math.degrees(math.atan2(wp[1] - self.y, wp[0] - self.x))
 
-    def _lookpoint(self):
+    def _project(self):
+        """Proyeksi posisi mobil ke segmen aktif. return (t, cx, cy, dist)."""
         w = self.world
-        acc = 0.0
-        i = max(0, self.wp_i - 1)
-        px, py = w.nodes[self.route[i]]
-        while i + 1 < len(self.route):
-            nx, ny = w.nodes[self.route[i + 1]]
-            seg = math.hypot(nx - px, ny - py)
-            if acc + seg >= self.LOOKAHEAD:
-                f = (self.LOOKAHEAD - acc) / max(seg, 1e-6)
-                return px + (nx - px) * f, py + (ny - py) * f
-            acc += seg
-            px, py = nx, ny
+        ax, ay = self.route[self.wp_i]
+        bx, by = self.route[self.wp_i + 1]
+        abx, aby = bx - ax, by - ay
+        ab2 = abx * abx + aby * aby + 1e-6
+        tt = max(0.0, min(1.0, ((self.x - ax) * abx + (self.y - ay) * aby) / ab2))
+        cx, cy = ax + abx * tt, ay + aby * tt
+        return tt, cx, cy, math.hypot(self.x - cx, self.y - cy)
+
+    def _lookpoint(self, t_proj=0.0):
+        """Titik lookahead: DI ATAS rute, sejauh target dari proyeksi.
+        Kalau segmen aktif lebih panjang dari target -> titik ada di
+        segmen yang sama (JANGAN lompat ke goal!)."""
+        i = self.wp_i
+        ax, ay = self.route[i]
+        bx, by = self.route[i + 1]
+        seglen = math.hypot(bx - ax, by - ay) + 1e-6
+        px = ax + (bx - ax) * t_proj
+        py = ay + (by - ay) * t_proj
+        target = self._lookahead()
+        acc = math.hypot(bx - px, by - py)  # sisa segmen aktif
+        if acc >= target:
+            ux, uy = (bx - ax) / seglen, (by - ay) / seglen
+            return px + ux * target, py + uy * target
+        rem = target - acc
+        while i + 2 < len(self.route) and rem > 1e-6:
             i += 1
-        return w.nodes[self.route[-1]]
+            nx, ny = self.route[i + 1]
+            seg = math.hypot(nx - bx, ny - by)
+            if rem <= seg:
+                f = rem / max(seg, 1e-6)
+                return bx + (nx - bx) * f, by + (ny - by) * f
+            rem -= seg
+            bx, by = nx, ny
+        return self.route[-1]
 
     def sense(self):
         w = self.world
-        while self.wp_i < len(self.route) - 1:
-            tgt = w.nodes[self.route[self.wp_i]]
-            if math.hypot(self.x - tgt[0], self.y - tgt[1]) < 28:
+        # 1. progresi: maju selama proyeksi UDAH lewat ujung segmen
+        while self.wp_i < len(self.route) - 2 and self._project()[0] >= 1.0:
+            self.wp_i += 1
+        t, cx, cy, dist = self._project()
+        # 2. capture radius kecil: nempel waypoint -> maju (toleransi tikungan)
+        while self.wp_i < len(self.route) - 2:
+            wpn = self.route[self.wp_i + 1]
+            if math.hypot(self.x - wpn[0], self.y - wpn[1]) < self.CAPTURE:
                 self.wp_i += 1
+                t, cx, cy, dist = self._project()
             else:
                 break
-        tgt = w.nodes[self.route[self.wp_i]]
-        desired = math.degrees(math.atan2(tgt[1] - self.y, tgt[0] - self.x))
+        tgt = self.route[min(self.wp_i + 1, len(self.route) - 1)]
+        # 3. PURE PURSUIT: arahkan ke titik lookahead DI ATAS rute
+        look = self._lookpoint(t)
+        desired = math.degrees(math.atan2(look[1] - self.y, look[0] - self.x))
         heading_err = (desired - self.heading + 180) % 360 - 180
-        seg_i = max(0, min(self.wp_i, len(self.route) - 2))
-        ax, ay = w.nodes[self.route[seg_i]]
-        bx, by = w.nodes[self.route[seg_i + 1]]
-        abx, aby = bx - ax, by - ay
-        apx, apy = self.x - ax, self.y - ay
-        ab2 = abx * abx + aby * aby + 1e-6
-        tt = max(0.0, min(1.0, (apx * abx + apy * aby) / ab2))
-        cx, cy = ax + abx * tt, ay + aby * tt
-        lateral = math.hypot(self.x - cx, self.y - cy)
-        hw = w.seg_halfw(self.route[seg_i], self.route[seg_i + 1])
-        # curvature: sudut belokan di depan (wp sekarang -> wp berikut)
-        i2 = min(self.wp_i + 1, len(self.route) - 1)
-        tgt2 = w.nodes[self.route[i2]]
-        d1x, d1y = tgt[0] - self.x, tgt[1] - self.y
-        d2x, d2y = tgt2[0] - tgt[0], tgt2[1] - tgt[1]
-        n1 = math.hypot(d1x, d1y) + 1e-6
-        n2 = math.hypot(d2x, d2y) + 1e-6
-        dot = max(-1.0, min(1.0, (d1x * d2x + d1y * d2y) / (n1 * n2)))
-        curv = math.degrees(math.acos(dot))
+        hw = w.seg_halfw(self.route[self.wp_i], self.route[self.wp_i + 1])
+        # 4. curvature: sudut belokan menunggu di depan (bobot jarak)
+        curv = 0.0
+        acc_d = 0.0
+        i = self.wp_i
+        while i + 2 < len(self.route) and acc_d < 120:
+            ax, ay = self.route[i]
+            bx, by = self.route[i + 1]
+            cxn, cyn = self.route[i + 2]
+            d1x, d1y = bx - ax, by - ay
+            d2x, d2y = cxn - bx, cyn - by
+            n1 = math.hypot(d1x, d1y) + 1e-6
+            n2 = math.hypot(d2x, d2y) + 1e-6
+            dot = max(-1.0, min(1.0, (d1x * d2x + d1y * d2y) / (n1 * n2)))
+            ang = math.degrees(math.acos(dot))
+            wgt = 0.45 + 0.55 * (1.0 - acc_d / 120.0)
+            curv = max(curv, ang * wgt)
+            acc_d += n1
+            i += 1
         return {
-            "lateral": lateral, "halfw": hw,
+            "lateral": dist, "halfw": hw,
             "heading_err": heading_err,
             "speed_norm": self.speed / self.MAXV,
             "wp": tgt, "cx": cx, "cy": cy,
@@ -621,8 +701,8 @@ class MapCar:
         self.x += math.cos(a) * self.speed
         self.y += math.sin(a) * self.speed
         self.alive_time += 1
-        if self.wp_i >= len(self.route) - 1:
-            d = self.world.nodes[self.route[-1]]
+        if self.wp_i >= len(self.route) - 2:
+            d = self.route[-1]
             if math.hypot(self.x - d[0], self.y - d[1]) < 12:
                 self.finished = True
 
@@ -636,13 +716,13 @@ def map_brain(state):
     gap = state.get("ahead_gap")
     steer = max(-1.0, min(1.0, he / 40.0))
     sharp = abs(he)
-    # antisipasi tikungan: makin tajam, makin pagi ngerem
-    if curv > 65:
-        thr, brk = 0.0, 0.85
-    elif curv > 40:
-        thr, brk = 0.3, 0.0
-    elif curv > 22:
-        thr, brk = 0.7, 0.0
+    # antisipasi tikungan: makin tajam, makin pagi ngerem (agresif biar gak motong)
+    if curv > 50:
+        thr, brk = 0.0, 0.9
+    elif curv > 30:
+        thr, brk = 0.25, 0.0
+    elif curv > 15:
+        thr, brk = 0.65, 0.0
     else:
         thr, brk = 1.0, 0.0
     # heading error tajam tetap menang
@@ -664,6 +744,9 @@ def map_brain(state):
         elif gap < 45:
             thr = min(thr, 0.35)
             acc = "geser"
+    # ANTI-STALL: nol speed + gak ada rintangan -> jangan deadlock di rem
+    if state.get("speed_norm", 0) < 0.05 and gap is None and brk > 0:
+        thr, brk = 0.35, 0.0
     return steer, thr, brk, {"he": he, "lat": state["lateral"], "acc": acc}
 
 
@@ -823,7 +906,7 @@ def draw_map(surf, world, car, cam, state, dec, stats, traffic, signals, mission
     # rute (casing + garis)
     if len(car.route) > 1:
         step = max(1, len(car.route) // 400)
-        pts = [cam.apply(*world.nodes[n]) for n in car.route[::step]]
+        pts = [cam.apply(*p) for p in car.route[::step]]
         pygame.draw.lines(surf, COL_ROUTE_CASE, False, pts, 6)
         pygame.draw.lines(surf, COL_ROUTE, False, pts, 3)
     # waypoint aktif
@@ -877,13 +960,14 @@ def parse_ll(s):
 
 
 def run_map(mapfile, headless, seconds, surf, clock, outdir,
-            start_coord=None, goal_coord=None, heading=None):
+            start_coord=None, goal_coord=None, heading=None, record=True,
+            width_scale=1.35):
     frames_dir = os.path.join(outdir, "frames")
     if headless:
         os.makedirs(frames_dir, exist_ok=True)
         for f in os.listdir(frames_dir):
             os.remove(os.path.join(frames_dir, f))
-    world = OSMWorld(mapfile)
+    world = OSMWorld(mapfile, width_scale=width_scale)
     comp = largest_component(world)
     if start_coord:
         sxm, sym = ll2xy(world.meta, *start_coord)
@@ -896,7 +980,7 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
     if len(route) < 2:
         print("rute gak ketemu — coba bbox lain")
         sys.exit(1)
-    car = MapCar(world, start, route)
+    car = MapCar(world, start, simplify([world.nodes[n] for n in route], eps=12.0))
     if heading is not None:
         car.heading = heading % 360.0
     signals = Signals(world, comp)
@@ -920,9 +1004,16 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
     total = FPS * seconds
     crash_cd = 0
     zoom = cam.zoom
+    off_frames = 0
+    frames = 0
     for fi in range(total):
         state = car.sense()
-        # ACC: cari mobil AI paling deket di koridor depan
+        # safety-net: keluar jalur > 35m -> snap balik ke rute
+        if state["lateral"] > 35 and not car.finished:
+            car.x, car.y = state["cx"], state["cy"]
+            car.speed *= 0.4
+            mission.recovers += 1
+        # ACC: mobil AI SEARAH di koridor depan (lawan arah bukan rintangan)
         hdir = math.radians(car.heading)
         fx_, fy_ = math.cos(hdir), math.sin(hdir)
         gap = None
@@ -932,23 +1023,31 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
             if 0 < fwd < 55:
                 lat = abs(-dx_ * fy_ + dy_ * fx_)
                 if lat < 11 and (gap is None or fwd < gap):
-                    gap = fwd
+                    tc_fwd = (math.cos(math.radians(tc["heading"])) * fx_
+                              + math.sin(math.radians(tc["heading"])) * fy_)
+                    if tc_fwd > 0.25 or tc["speed"] < 0.1:
+                        gap = fwd
         state["ahead_gap"] = gap
         steer, thr, brk, dec = map_brain(state)
-        # berhenti di lampu merah: cek node tujuan aktif
-        tgt = car.route[min(car.wp_i, len(car.route) - 1)]
-        if tgt in signals.nodes:
-            tx, ty = world.nodes[tgt]
-            d = math.hypot(car.x - tx, car.y - ty)
+        # berhenti di lampu merah: lampu terdekat di koridor depan
+        si_best, sd_best = -1, 1e9
+        for j, (lx, ly) in enumerate(signals.pos):
+            dx_, dy_ = lx - car.x, ly - car.y
+            fwd = dx_ * fx_ + dy_ * fy_
+            if 6 < fwd < 42:
+                latt = abs(-dx_ * fy_ + dy_ * fx_)
+                if latt < 13 and fwd < sd_best:
+                    sd_best, si_best = fwd, j
+        if si_best >= 0:
             axis = 0 if abs(math.cos(math.radians(car.heading))) >= abs(math.sin(math.radians(car.heading))) else 1
-            if 6 < d < 40 and not signals.green(tgt, axis):
+            if not signals.green(signals.nodes_at(si_best), axis):
                 thr, brk = 0.0, 1.0
-            # nyabrang merah: nempel node + masih merah + gerak
-            if d < 9 and not signals.green(tgt, axis) and car.speed > 1.0:
-                last = mission.red_cd.get(tgt, -9999)
-                if fi - last > 240:
-                    mission.reds += 1
-                    mission.red_cd[tgt] = fi
+                # nyabrang merah: nempel lampu + masih merah + gerak
+                if sd_best < 9 and car.speed > 1.0:
+                    last = mission.red_cd.get(si_best, -9999)
+                    if fi - last > 240:
+                        mission.reds += 1
+                        mission.red_cd[si_best] = fi
         car.step(steer, thr, brk)
         mission.driven += car.speed
         signals.update()
@@ -973,6 +1072,9 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
         cam.follow(car.x, car.y)
         cam.zoom = zoom
         name_cache[0] = (name_cache[0] + 1) % 15
+        if state["lateral"] > state["halfw"] + 4:
+            off_frames += 1
+        frames = fi + 1
         draw_map(surf, world, car, cam, state, dec, f"{clock.get_fps():.0f} fps",
                  traffic, signals, mission, name_cache, tiles)
         # misi selesai -> skor + misi baru
@@ -1005,7 +1107,7 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
             pygame.event.pump()
             pygame.display.flip()
             clock.tick(FPS)
-    if headless:
+    if headless and record and shutil.which("ffmpeg"):
         mp4 = os.path.join(outdir, "gee_fundriving_demo.mp4")
         subprocess.run([
             "ffmpeg", "-y", "-loglevel", "error", "-f", "image2",
@@ -1014,7 +1116,13 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
         ], check=True)
         print("VIDEO_OK", mp4)
     print(f"skor akhir {mission.score} | misi selesai {mission.n} | "
-          f"merah {mission.reds} tabrak {mission.crashes} | alive {car.alive_time // FPS}s")
+          f"merah {mission.reds} tabrak {mission.crashes} | keluar jalur {mission.recovers} | "
+          f"offroad {100 * off_frames / max(frames, 1):.1f}%")
+    return {"selesai": car.finished, "detik_sim": car.alive_time // FPS,
+            "jarak_rute_m": round(mission.route_len), "tempuh_m": round(mission.driven),
+            "skor": mission.score, "merah": mission.reds, "tabrak": mission.crashes,
+            "keluar_jalur": mission.recovers,
+            "offroad_pct": round(100 * off_frames / max(frames, 1), 1)}
 
 
 def run_circuit(headless, seconds, surf, clock):
@@ -1051,6 +1159,14 @@ def main():
     start_coord = parse_ll(args[args.index("--start") + 1]) if "--start" in args else None
     goal_coord = parse_ll(args[args.index("--goal") + 1]) if "--goal" in args else None
     heading = float(args[args.index("--heading") + 1]) if "--heading" in args else None
+    if "--route" in args:
+        a, b = args[args.index("--route") + 1], args[args.index("--route") + 2]
+        mapdir = os.path.dirname(mapfile) if mapfile else "maps"
+        with open(os.path.join(mapdir, "poi.json"), encoding="utf-8") as f:
+            poi = json.load(f)
+        start_coord = (poi[a]["lat"], poi[a]["lon"])
+        goal_coord = (poi[b]["lat"], poi[b]["lon"])
+        print(f"rute patokan: {poi[a].get('name', a)} -> {poi[b].get('name', b)}", file=sys.stderr)
 
     outdir = os.path.expanduser("~/gee-fundriving")
     os.makedirs(outdir, exist_ok=True)
