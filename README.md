@@ -6,6 +6,27 @@ Simulasi nyetir 2D top-down: **1 mobil autonomous** keliling sirkuit dengan *Sys
 
 ![gameplay](docs/demo.png)
 
+## Peta OSM (baru!)
+
+Sim bisa jalan di **peta jalan asli** — misal daerah Puri Indah, Jakarta Barat:
+
+```bash
+# 1. Fetch jalan dari OpenStreetMap (sekali saja)
+python3 tools/fetch_osm.py        # -> maps/puri_indah.json (1137 jalan, 3.6x2.4 km)
+
+# 2. Sim di peta asli: mobil otomatis cari rute barat->timur & nyetir sendiri
+python3 minidrive.py --map maps/puri_indah.json --headless --seconds 150
+```
+
+Fitur map mode:
+- Graf jalan OSM (node/way) + pathfinding A*-like (heapq BFS berbobot)
+- Mobil follow rute pakai waypoint: steer proporsional sudut ke target,
+  rem otomatis di tikungan tajam (>90° = balik arah)
+- Kamera follow + render jalan sesuai lebar asli (tol 22m s/d gang 8m)
+- Hasil verifikasi: rute 92 waypoint, **finished=True** (sampai tujuan)
+
+Tambah peta daerah lain: ubah `LAT0/LON0/LAT1/LON1` di `tools/fetch_osm.py`.
+
 ## Konsep
 
 Mobil nggak pakai bahasa natural — dia **memutuskan** tiap tick:
@@ -44,9 +65,11 @@ minidrive.py     # sim + physics + sensors + brain + renderer
 docs/demo.png    # screenshot gameplay
 ```
 
+- [x] Map mode: peta jalan asli OSM (Puri Indah) — DONE
+
 ## Roadmap
 
-- [ ] Mode "sedang": mobil + motor, obstacle acak
+- [ ] Mode sedang: mobil + motor, obstacle acak, traffic
 - [ ] Multi-agent + leaderboard
 - [ ] Hook Jev API asli (early access TypeSafe) sebagai brain
 - [ ] Brain generational (evolution) buat belajar hindar
