@@ -10,9 +10,14 @@ MODE:
                            terpendek. Kamera ikut mobil.
                            Koordinat bisa diatur: --start "lat,lon"
                            --goal "lat,lon" --heading derajat.
-                           Keys: [ESC] keluar, [-][=] zoom, [R] misi baru.
+                           Keys: [ESC] keluar, [-][=] zoom, [R] misi baru,
+                           [F] assistant ON/OFF (autopilot vs kemudi sendiri
+                           WASD/arrow).
 
-Headless: rekam MP4 (butuh ffmpeg).
+Headless: rekam MP4 (butuh ffmpeg). Mulai langsung nyetir sendiri: --manual.
+Windowed tanpa argumen: main menu START / SETTINGS / ABOUT / EXIT — setelan
+(mode, peta, fps render) tersimpan di ~/gee-fundriving/settings.json; ESC di
+game balik ke menu.
 """
 import json
 import math
@@ -26,7 +31,17 @@ from collections import OrderedDict
 import pygame
 
 W, H = 960, 540
-FPS = 60
+FPS = 60              # tick fisika simulasi (Hz) — semua konstanta tuning diikat ke sini
+RENDER_FPS = 30       # render + input + rekam video (fps)
+RENDER_EVERY = FPS // RENDER_FPS   # fisika jalan tiap tick, render tiap N tick
+SETTINGS_PATH = os.path.join(os.path.expanduser("~"), "gee-fundriving", "settings.json")
+
+
+def set_render_fps(n):
+    """Ubah fps render dari menu SETTINGS (fisika tetap FPS)."""
+    global RENDER_FPS, RENDER_EVERY
+    RENDER_FPS = n if n in (30, 60) else 30
+    RENDER_EVERY = max(1, FPS // RENDER_FPS)
 
 # ---------------------------------------------------------------- sirkuit ---
 ROAD_W = 140.0
@@ -777,6 +792,16 @@ def map_brain(state):
     return steer, thr, brk, {"he": he, "lat": state["lateral"], "acc": acc}
 
 
+def driver_controls(pressed):
+    """Kemudi manual: WASD / arrow keys. Return (steer, thr, brk).
+    Dipanggil tiap tick fisika pas mode manual (assistant OFF)."""
+    steer = (1.0 if pressed[pygame.K_RIGHT] or pressed[pygame.K_d] else 0.0) - \
+            (1.0 if pressed[pygame.K_LEFT] or pressed[pygame.K_a] else 0.0)
+    thr = 1.0 if pressed[pygame.K_UP] or pressed[pygame.K_w] else 0.0
+    brk = 1.0 if pressed[pygame.K_DOWN] or pressed[pygame.K_s] else 0.0
+    return steer, thr, brk
+
+
 def largest_component(world):
     best = set()
     seen = set()
@@ -966,7 +991,7 @@ def draw_map(surf, world, car, cam, state, dec, stats, traffic, signals, mission
         gx, gy = world.nodes[mission.goal]
         gdist = math.hypot(car.x - gx, car.y - gy)
     hud(surf, [
-        f"Gee-FunDriving | {world.meta['name']}",
+        f"Gee-FunDriving | {world.meta['name']} | {dec.get('mode', '')}",
         f"speed {car.speed:.1f}  alive {car.alive_time // FPS}s  wp {car.wp_i}/{len(car.route)}",
         f"he {dec.get('he', 0):.0f}  lat {dec.get('lat', 0):.0f}m  {dec.get('acc', '')} {name}".replace("  ", " "),
         f"misi #{mission.n + 1} -> {gdist:.0f}m | skor {mission.score} | merah {mission.reds} tabrak {mission.crashes}",
@@ -989,7 +1014,7 @@ def parse_ll(s):
 
 def run_map(mapfile, headless, seconds, surf, clock, outdir,
             start_coord=None, goal_coord=None, heading=None, record=True,
-            width_scale=1.35):
+            width_scale=1.35, auto_start=True):
     frames_dir = os.path.join(outdir, "frames")
     if headless:
         os.makedirs(frames_dir, exist_ok=True)
@@ -1031,11 +1056,13 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
     cam.x, cam.y = car.x, car.y
     tiles = WorldTiles(world)
     name_cache = [0, ""]
-    total = FPS * seconds
+    # timer cuma buat headless/benchmark; windowed tanpa --seconds = main santai tanpa batas
+    total = FPS * seconds if seconds is not None else 1 << 30
     crash_cd = 0
     zoom = cam.zoom
     off_frames = 0
     frames = 0
+    saved = 0
 
     def purge_near(radius=130.0):
         """Buang mobil AI sekitar hero (buat respawn misi biar gak nempel)."""
@@ -1047,10 +1074,13 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
                     traffic.cars[j] = dict(random.choice(cand))
 
     stall_frames = 0
+    man_steer = 0.0
+    auto = auto_start or headless  # headless gak ada sopir -> assistant wajib ON
     for fi in range(total):
         state = car.sense()
-        # safety-net: keluar jalur > 35m -> snap balik ke rute
-        if state["lateral"] > 35 and not car.finished:
+        # safety-net: keluar jalur > 35m -> snap balik ke rute (cuma mode assistant;
+        # kalau lagi nyetir sendiri, bebas eksplor — nggak di-snap)
+        if auto and state["lateral"] > 35 and not car.finished:
             car.x, car.y = state["cx"], state["cy"]
             car.speed *= 0.4
             mission.recovers += 1
@@ -1070,6 +1100,7 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
                         gap = fwd
         state["ahead_gap"] = gap
         steer, thr, brk, dec = map_brain(state)
+        dec["mode"] = "ASSISTANT [F]" if auto else "MANUAL [F]"
         # berhenti di lampu merah: lampu terdekat di koridor depan
         si_best, sd_best = -1, 1e9
         for j, (lx, ly) in enumerate(signals.pos):
@@ -1082,17 +1113,27 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
         if si_best >= 0:
             axis = 0 if abs(math.cos(math.radians(car.heading))) >= abs(math.sin(math.radians(car.heading))) else 1
             if not signals.green(signals.nodes_at(si_best), axis):
-                thr, brk = 0.0, 1.0
+                if auto:  # manual: kamu yang mutusin — nyabrang = denda
+                    thr, brk = 0.0, 1.0
                 # nyabrang merah: nempel lampu + masih merah + gerak
                 if sd_best < 9 and car.speed > 1.0:
                     last = mission.red_cd.get(si_best, -9999)
                     if fi - last > 240:
                         mission.reds += 1
                         mission.red_cd[si_best] = fi
+        if not auto:
+            # KENDALIIN SENDIRI: keyboard menang atas brain. Kemudi di-lerp ke
+            # target (pola baku controller keyboard) biar gak snap-kiri/snap-kanan.
+            mst, thr, brk = driver_controls(pygame.key.get_pressed())
+            man_steer += (mst - man_steer) * 0.25
+            steer, thr, brk = man_steer, thr, brk
+            dec = {"mode": "MANUAL [F]", "he": state["heading_err"],
+                   "lat": state["lateral"], "acc": "kemudi kamu"}
         car.step(steer, thr, brk)
         mission.driven += car.speed
         # deadlock breaker: berhenti total + rintangan nempel -> pindahkan rintangan
-        if car.speed < 0.15 and state["ahead_gap"] is not None and state["ahead_gap"] < 15:
+        # (assistant only; kalau manual, berhenti = pilihan kamu)
+        if car.speed < 0.15 and auto and state["ahead_gap"] is not None and state["ahead_gap"] < 15:
             stall_frames += 1
         else:
             stall_frames = 0
@@ -1133,12 +1174,9 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
                     break
         cam.follow(car.x, car.y)
         cam.zoom = zoom
-        name_cache[0] = (name_cache[0] + 1) % 15
         if state["lateral"] > state["halfw"] + 4:
             off_frames += 1
         frames = fi + 1
-        draw_map(surf, world, car, cam, state, dec, f"{clock.get_fps():.0f} fps",
-                 traffic, signals, mission, name_cache, tiles)
         # misi selesai -> skor + misi baru
         if car.finished:
             pts = mission.complete(car)
@@ -1151,30 +1189,41 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
                 print("gak ada tujuan baru — selesai", file=sys.stderr)
                 break
             purge_near()
-        if headless and fi % 2 == 0:
-            pygame.image.save(surf, os.path.join(frames_dir, f"f{fi:05d}.png"))
-        if not headless:
-            for ev in pygame.event.get():
-                if ev.type == pygame.QUIT:
-                    return "quit"
-                if ev.type == pygame.KEYDOWN:
-                    if ev.key == pygame.K_ESCAPE:
+        # render + input + rekam tiap RENDER_EVERY tick -> 30fps (fisika tetap 60Hz)
+        if fi % RENDER_EVERY == 0:
+            name_cache[0] = (name_cache[0] + 1) % 15
+            draw_map(surf, world, car, cam, state, dec, f"{clock.get_fps():.0f} fps",
+                     traffic, signals, mission, name_cache, tiles)
+            if headless:
+                pygame.image.save(surf, os.path.join(frames_dir, f"f{saved:05d}.png"))
+                saved += 1
+            else:
+                for ev in pygame.event.get():
+                    if ev.type == pygame.QUIT:
                         return "quit"
-                    if ev.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
-                        zoom = min(1.6, zoom * 1.15)
-                    if ev.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
-                        zoom = max(0.25, zoom / 1.15)
-                    if ev.key == pygame.K_r:
-                        near = world.nearest_node(car.x, car.y, comp)
-                        mission.new(near, car)
-            pygame.event.pump()
-            pygame.display.flip()
-            clock.tick(FPS)
+                    if ev.type == pygame.KEYDOWN:
+                        if ev.key == pygame.K_ESCAPE:
+                            return "quit"
+                        if ev.key in (pygame.K_EQUALS, pygame.K_PLUS, pygame.K_KP_PLUS):
+                            zoom = min(1.6, zoom * 1.15)
+                        if ev.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
+                            zoom = max(0.25, zoom / 1.15)
+                        if ev.key == pygame.K_r:
+                            near = world.nearest_node(car.x, car.y, comp)
+                            mission.new(near, car)
+                        if ev.key == pygame.K_f:
+                            auto = not auto
+                            man_steer = 0.0  # jangan bawa bekas kemudi pas serah/ambil alih
+                pygame.event.pump()
+                pygame.display.flip()
+                clock.tick(RENDER_FPS)
     if headless and record and shutil.which("ffmpeg"):
         mp4 = os.path.join(outdir, "gee_fundriving_demo.mp4")
+        # urutan gambar (%05d), bukan glob — build ffmpeg Windows gak dukung glob
         subprocess.run([
             "ffmpeg", "-y", "-loglevel", "error", "-f", "image2",
-            "-pattern_type", "glob", "-i", os.path.join(frames_dir, "f*.png"),
+            "-framerate", str(RENDER_FPS),
+            "-i", os.path.join(frames_dir, "f%05d.png"),
             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "23", mp4,
         ], check=True)
         print("VIDEO_OK", mp4)
@@ -1188,34 +1237,285 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
             "offroad_pct": round(100 * off_frames / max(frames, 1), 1)}
 
 
-def run_circuit(headless, seconds, surf, clock):
+def run_circuit(headless, seconds, surf, clock, auto_start=True):
     car = CircuitCar()
-    total = FPS * seconds
+    auto = auto_start or headless  # headless gak ada sopir -> assistant wajib ON
+    man_steer = 0.0
+    # timer cuma buat headless/benchmark; windowed tanpa --seconds = main santai tanpa batas
+    total = FPS * seconds if seconds is not None else 1 << 30
     for fi in range(total):
         state = car.sense()
         steer, thr, brk, dec = brain_decide(state)
+        if not auto:
+            mst, thr, brk = driver_controls(pygame.key.get_pressed())
+            man_steer += (mst - man_steer) * 0.25
+            steer, thr, brk = man_steer, thr, brk
+            dec = {"front_risk": 0.0, "steer": (steer, 1.0)}
         car.step(steer, thr, brk)
-        if not car.frame_alive:
+        # keluar track: assistant auto-reset; manual = balikin sendiri
+        if auto and not car.frame_alive:
             car.reset()
-        draw_circuit(surf, car, state, dec, "")
-        if not headless:
-            for ev in pygame.event.get():
-                if ev.type == pygame.QUIT:
-                    pygame.quit()
-                    return
-            pygame.event.pump()
-            pygame.display.flip()
-            clock.tick(FPS)
-    pygame.quit()
+        if fi % RENDER_EVERY == 0:
+            stats = "mode ASSISTANT [F]" if auto else "mode MANUAL [F]"
+            draw_circuit(surf, car, state, dec, stats)
+            if not headless:
+                for ev in pygame.event.get():
+                    if ev.type == pygame.QUIT:
+                        return
+                    if ev.type == pygame.KEYDOWN:
+                        if ev.key == pygame.K_f:
+                            auto = not auto
+                            man_steer = 0.0
+                        elif ev.key == pygame.K_ESCAPE:
+                            return  # balik ke main menu
+                pygame.event.pump()
+                pygame.display.flip()
+                clock.tick(RENDER_FPS)
     print(f"selesai: laps {car.laps:.2f}")
+
+
+def load_settings():
+    """Setelan tersimpan di ~/gee-fundriving/settings.json (mode, peta, fps render)."""
+    try:
+        with open(SETTINGS_PATH, encoding="utf-8") as f:
+            s = json.load(f)
+    except Exception:
+        s = {}
+    st = {
+        "mode": s.get("mode") if s.get("mode") in ("assistant", "manual") else "assistant",
+        "map": s.get("map") if s.get("map") in ("loop", "circuit", "osm") else "loop",
+        "fps": s.get("fps") if s.get("fps") in (30, 60) else 30,
+    }
+    if st["map"] == "osm" and not os.path.exists(os.path.join("maps", "puri_cengkareng.json")):
+        st["map"] = "loop"
+    return st
+
+
+def save_settings(st):
+    try:
+        os.makedirs(os.path.dirname(SETTINGS_PATH), exist_ok=True)
+        with open(SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(st, f)
+    except Exception:
+        pass
+
+
+def resolve_map(mkey):
+    """Kunci setelan peta -> path file (None = mode sirkuit), fallback aman."""
+    if mkey == "circuit":
+        return None
+    if mkey == "osm" and os.path.exists(os.path.join("maps", "puri_cengkareng.json")):
+        return os.path.join("maps", "puri_cengkareng.json")
+    return os.path.join("maps", "loop_city.json")
+
+
+def _osm_available():
+    return os.path.exists(os.path.join("maps", "puri_cengkareng.json"))
+
+
+def settings_screen(surf, clock, settings):
+    """Layar SETTINGS: mode, peta, fps render. Ubah nilai = langsung disimpan.
+    ↑↓ pilih baris, ←→/ENTER ganti nilai, ESC/kembali balik ke menu."""
+    big = pygame.font.SysFont("dejavusansbold", 40)
+    font = pygame.font.SysFont("dejavusansmono", 18)
+    small = pygame.font.SysFont("dejavusansmono", 14)
+
+    def rows():
+        mode_opts = [("ASSISTANT", "assistant"), ("KENDALI SENDIRI", "manual")]
+        map_opts = [("LOOP CITY", "loop"), ("SIRKUIT", "circuit")]
+        if _osm_available():
+            map_opts.append(("PETA OSM", "osm"))
+        return [
+            ("MODE", settings["mode"], mode_opts),
+            ("PETA", settings["map"], map_opts),
+            ("RENDER FPS", settings["fps"], [30, 60]),
+        ]
+
+    def val_label(cur, choices):
+        for c in choices:
+            key = c[1] if isinstance(c, tuple) else c
+            if key == cur:
+                return c[0] if isinstance(c, tuple) else str(c)
+        return str(cur)
+
+    sel = 0
+    while True:
+        rs = rows()
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                return
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_ESCAPE:
+                    return
+                if ev.key in (pygame.K_UP, pygame.K_w):
+                    sel = (sel - 1) % (len(rs) + 1)
+                elif ev.key in (pygame.K_DOWN, pygame.K_s):
+                    sel = (sel + 1) % (len(rs) + 1)
+                elif ev.key in (pygame.K_LEFT, pygame.K_RIGHT, pygame.K_RETURN,
+                                pygame.K_KP_ENTER, pygame.K_SPACE):
+                    if sel >= len(rs):
+                        return  # baris KEMBALI
+                    label, cur, choices = rs[sel]
+                    keys = [c[1] if isinstance(c, tuple) else c for c in choices]
+                    idx = keys.index(cur) if cur in keys else 0
+                    step = -1 if ev.key == pygame.K_LEFT else 1
+                    newval = keys[(idx + step) % len(keys)]
+                    settings[{"MODE": "mode", "PETA": "map",
+                              "RENDER FPS": "fps"}[label]] = newval
+                    if label == "RENDER FPS":
+                        set_render_fps(newval)
+                    save_settings(settings)
+        surf.fill((24, 26, 32))
+        t = big.render("SETTINGS", True, (240, 240, 240))
+        surf.blit(t, (W // 2 - t.get_width() // 2, 56))
+        y = 150
+        for i, (label, cur, choices) in enumerate(rs):
+            on = i == sel
+            if on:
+                pygame.draw.rect(surf, (34, 42, 50),
+                                 (W // 2 - 300, y - 5, 600, 30), border_radius=6)
+            col = (120, 220, 140) if on else (150, 155, 170)
+            mark = "> " if on else "   "
+            surf.blit(font.render(mark + label, True, col), (W // 2 - 290, y))
+            disp = ("< " + val_label(cur, choices) + " >") if on else val_label(cur, choices)
+            surf.blit(font.render(disp, True, col), (W // 2 + 40, y))
+            y += 36
+        if sel >= len(rs):
+            pygame.draw.rect(surf, (34, 42, 50),
+                             (W // 2 - 120, y - 5, 240, 30), border_radius=6)
+        surf.blit(font.render(("> " if sel >= len(rs) else "   ") + "KEMBALI",
+                              True, (120, 220, 140) if sel >= len(rs) else (150, 155, 170)),
+                  (W // 2 - 110, y))
+        foot = small.render("←→/ENTER ganti nilai    ↑↓ pilih    ESC kembali",
+                            True, (120, 125, 140))
+        surf.blit(foot, (W // 2 - foot.get_width() // 2, H - 34))
+        pygame.display.flip()
+        clock.tick(RENDER_FPS)
+
+
+def about_screen(surf, clock):
+    """Layar ABOUT. ESC/ENTER/klik tutup balik ke menu."""
+    big = pygame.font.SysFont("dejavusansbold", 40)
+    font = pygame.font.SysFont("dejavusansmono", 16)
+    lines = [
+        ("Gee-FunDriving", (240, 240, 240)),
+        ("", None),
+        ("Sim nyetir 2D top-down: 1 mobil autonomous dengan", None),
+        ("System-One decision loop — tiap tick dia memutuskan", None),
+        ("(typed), bukan ngobrol bahasa natural.", None),
+        ("", None),
+        ("Terinspirasi demo \"rebuilt Tesla FSD with Jev\"", None),
+        ("(TypeSafe AI). Peta Loop City buatan + OSM asli.", None),
+        ("", None),
+        ("KONTROL", (120, 220, 140)),
+        ("  F          assistant ON/OFF (ambil alih / serah kemudi)", None),
+        ("  WASD/panah gas, rem, belok (pas kendali sendiri)", None),
+        ("  R misi baru   [-][=] zoom   ESC keluar ke menu", None),
+        ("", None),
+        ("Python + pygame · OpenStreetMap · ffmpeg", (120, 125, 140)),
+    ]
+    while True:
+        for ev in pygame.event.get():
+            if ev.type in (pygame.QUIT,):
+                return
+            if ev.type == pygame.KEYDOWN and ev.key in (pygame.K_ESCAPE, pygame.K_RETURN,
+                                                        pygame.K_KP_ENTER, pygame.K_SPACE):
+                return
+        surf.fill((24, 26, 32))
+        y = 40
+        for txt, col in lines:
+            f = big if txt == "Gee-FunDriving" else font
+            c = col if col else (200, 205, 215)
+            surf.blit(f.render(txt, True, c), (120, y))
+            y += 26 if f is font else 52
+        foot = font.render("ESC kembali", True, (120, 125, 140))
+        surf.blit(foot, (W // 2 - foot.get_width() // 2, H - 34))
+        pygame.display.flip()
+        clock.tick(RENDER_FPS)
+
+
+def main_menu(surf, clock, settings):
+    """Menu utama: START / SETTINGS / ABOUT / EXIT.
+    START -> {'mapfile', 'auto_start'}; EXIT/ESC -> None.
+    SETTINGS & ABOUT ditangani di sini, balik ke menu lagi."""
+    big = pygame.font.SysFont("dejavusansbold", 46)
+    font = pygame.font.SysFont("dejavusansmono", 18)
+    small = pygame.font.SysFont("dejavusansmono", 14)
+    logo = None
+    logo_path = os.path.join("assets", "logo-both.png")
+    if os.path.exists(logo_path):
+        try:
+            img = pygame.image.load(logo_path).convert_alpha()
+            ratio = 400.0 / img.get_width()
+            logo = pygame.transform.smoothscale(img, (400, int(img.get_height() * ratio)))
+        except Exception:
+            logo = None
+
+    sel = 0
+    while True:
+        mode_lbl = "ASSISTANT" if settings["mode"] == "assistant" else "KENDALI SENDIRI"
+        map_lbl = {"loop": "LOOP CITY", "circuit": "SIRKUIT", "osm": "PETA OSM"}[settings["map"]]
+        items = [("START  —  {} · {}".format(mode_lbl, map_lbl), "start"),
+                 ("SETTINGS", "settings"),
+                 ("ABOUT", "about"),
+                 ("EXIT", "exit")]
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                return None
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_ESCAPE:
+                    return None
+                if ev.key in (pygame.K_UP, pygame.K_w):
+                    sel = (sel - 1) % len(items)
+                elif ev.key in (pygame.K_DOWN, pygame.K_s):
+                    sel = (sel + 1) % len(items)
+                elif ev.key in (pygame.K_RETURN, pygame.K_KP_ENTER, pygame.K_SPACE):
+                    act = items[sel][1]
+                    if act == "start":
+                        return {"mapfile": resolve_map(settings["map"]),
+                                "auto_start": settings["mode"] == "assistant"}
+                    if act == "settings":
+                        settings_screen(surf, clock, settings)
+                    elif act == "about":
+                        about_screen(surf, clock)
+                    else:
+                        return None
+
+        surf.fill((24, 26, 32))
+        top = 26
+        if logo:
+            surf.blit(logo, (W // 2 - logo.get_width() // 2, top))
+            top += logo.get_height() + 14
+        else:
+            t = big.render("Gee-FunDriving", True, (240, 240, 240))
+            surf.blit(t, (W // 2 - t.get_width() // 2, top))
+            top += t.get_height() + 16
+        y = top + 10
+        for i, (label, _act) in enumerate(items):
+            on = i == sel
+            if on:
+                pygame.draw.rect(surf, (34, 42, 50),
+                                 (W // 2 - 340, y - 5, 680, 28), border_radius=6)
+            txt = ("> " if on else "   ") + label
+            surf.blit(font.render(txt, True, (120, 220, 140) if on else (150, 155, 170)),
+                      (W // 2 - 330, y))
+            y += 32
+        foot = small.render("W/S atau panah: pilih    ENTER: pilih    ESC: keluar",
+                            True, (120, 125, 140))
+        surf.blit(foot, (W // 2 - foot.get_width() // 2, H - 34))
+        pygame.display.flip()
+        clock.tick(RENDER_FPS)
 
 
 def main():
     args = sys.argv[1:]
     headless = "--headless" in args
+    auto_start = "--manual" not in args
     seconds = 45
     if "--seconds" in args:
         seconds = int(args[args.index("--seconds") + 1])
+    elif not headless:
+        seconds = None  # main santai di windowed: tanpa timer
     mapfile = None
     if "--map" in args:
         mapfile = args[args.index("--map") + 1]
@@ -1239,17 +1539,40 @@ def main():
     if headless:
         os.environ["SDL_VIDEODRIVER"] = "dummy"
     pygame.init()
-    surf = pygame.Surface((W, H)) if headless else pygame.display.set_mode((W, H))
     if not headless:
+        surf = pygame.display.set_mode((W, H))
         pygame.display.set_caption("Gee-FunDriving")
+    else:
+        surf = pygame.Surface((W, H))
     clock = pygame.time.Clock()
+
+    # main menu: cuma buat run santai windowed (bukan --headless / --map / rute).
+    # ESC di game balik ke sini — menu terus tampil sampai user EXIT.
+    if not headless and mapfile is None and "--route" not in args and "--start" not in args:
+        settings = load_settings()
+        if "--manual" in args:
+            settings["mode"] = "manual"  # override CLI sesi ini, tanpa nulis file
+        set_render_fps(settings["fps"])
+        while True:
+            picked = main_menu(surf, clock, settings)
+            if picked is None:
+                break
+            pygame.event.clear()  # jangan sampai tombol menu bocor ke in-game
+            if picked["mapfile"] is None:
+                run_circuit(False, None, surf, clock, auto_start=picked["auto_start"])
+            else:
+                run_map(picked["mapfile"], False, None, surf, clock, outdir,
+                        auto_start=picked["auto_start"])
+        pygame.quit()
+        return
 
     if mapfile:
         run_map(mapfile, headless, seconds, surf, clock, outdir,
-                start_coord, goal_coord, heading)
+                start_coord, goal_coord, heading, auto_start=auto_start)
         pygame.quit()
     else:
-        run_circuit(headless, seconds, surf, clock)
+        run_circuit(headless, seconds, surf, clock, auto_start=auto_start)
+        pygame.quit()
 
 
 if __name__ == "__main__":
