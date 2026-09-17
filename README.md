@@ -1,8 +1,8 @@
-# Gee-MiniDrive 🚗💨
+# Gee-FunDriving 🚗💨
 
 Simulasi nyetir 2D top-down: **1 mobil autonomous** keliling sirkuit dengan *System-One decision loop* — inspirasi dari [demo "rebuilt Tesla FSD with Jev"](https://x.com/jpschroeder/status/2100347770867458384) (TypeSafe AI's Jev model).
 
-![Gee-MiniDrive](assets/logo-both.png)
+![Gee-FunDriving](assets/logo-both.png)
 
 ![gameplay](docs/demo.png)
 
@@ -15,7 +15,7 @@ Sim bisa jalan di **peta jalan asli** — misal daerah Puri Indah, Jakarta Barat
 python3 tools/fetch_osm.py        # -> maps/puri_indah.json (1137 jalan, 3.6x2.4 km)
 
 # 2. Sim di peta asli: mobil otomatis cari rute barat->timur & nyetir sendiri
-python3 minidrive.py --map maps/puri_indah.json --headless --seconds 150
+python3 fundriving.py --map maps/puri_indah.json --headless --seconds 150
 ```
 
 Fitur map mode:
@@ -51,17 +51,17 @@ Fungsi `brain_decide(state)` adalah **pluggable brain**. Default: rule-based yan
 pip install pygame
 
 # Mode jendela (butuh display)
-python3 minidrive.py
+python3 fundriving.py
 
 # Headless + rekam MP4 30 detik
-python3 minidrive.py --headless --seconds 30
-# → minidrive_demo.mp4
+python3 fundriving.py --headless --seconds 30
+# → fundriving_demo.mp4
 ```
 
 ## Struktur
 
 ```
-minidrive.py     # sim + physics + sensors + brain + renderer
+fundriving.py     # sim + physics + sensors + brain + renderer
 docs/demo.png    # screenshot gameplay
 ```
 

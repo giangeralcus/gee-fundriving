@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate logo Gee-MiniDrive: mobil & motor 2D flat, dark bg, racing stripe."""
+"""Generate logo Gee-FunDriving: mobil & motor 2D flat, dark bg, racing stripe."""
 import math
 
 import pygame
@@ -104,7 +104,7 @@ def make_logo(size, out, mode="both"):
     # teks kecil di bawah
     try:
         font = pygame.font.SysFont("dejavusansbold", max(12, size // 9))
-        txt = font.render("GEE-MINIDRIVE", True, (235, 235, 235))
+        txt = font.render("GEE-FUNDRIVING", True, (235, 235, 235))
         surf.blit(txt, txt.get_rect(center=(size // 2, size - size // 9)))
         font2 = pygame.font.SysFont("dejavusansbold", max(10, size // 14))
         txt2 = font2.render("- AUTONOMOUS -", True, (120, 200, 255))

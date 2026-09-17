@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Fetch jalan-jalan daerah Puri Indah (Jakarta Barat) dari OpenStreetMap
-via Overpass API, lalu konversi ke map format Gee-MiniDrive (JSON).
+via Overpass API, lalu konversi ke map format Gee-FunDriving (JSON).
 
 Output: maps/puri_indah.json berisi:
 - nodes: {id: (x, y)}  — koordinat meter (lokal, origin di bbox corner)
@@ -28,7 +28,7 @@ out body qt;"""
 def fetch():
     url = "https://overpass-api.de/api/interpreter"
     data = urllib.parse.urlencode({"data": QUERY}).encode()
-    req = urllib.request.Request(url, data=data, headers={"User-Agent": "GeeMiniDrive/1.0"})
+    req = urllib.request.Request(url, data=data, headers={"User-Agent": "GeeFunDriving/1.0"})
     with urllib.request.urlopen(req, timeout=90) as r:
         return json.load(r)
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Gee-MiniDrive — sim nyetir 2D top-down.
+Gee-FunDriving — sim nyetir 2D top-down.
 
 MODE:
 1. Sirkuit (default)     : track oval, brain rule-based System-One loop.
@@ -413,7 +413,7 @@ def draw_map(surf, world, car, cam, state, dec, stats):
     col = (80, 220, 120) if not car.finished else (90, 160, 255)
     pygame.draw.polygon(surf, col, pts)
     hud(surf, [
-        f"Gee-MiniDrive | {world.meta['name']}",
+        f"Gee-FunDriving | {world.meta['name']}",
         f"speed {car.speed:.1f}  alive {car.alive_time // FPS}s  wp {car.wp_i}/{len(car.route)}",
         f"he {dec.get('he', 0):.0f}  lat {dec.get('lat', 0):.0f}m  {stats}",
     ])
@@ -430,7 +430,7 @@ def main():
     if "--map" in args:
         mapfile = args[args.index("--map") + 1]
 
-    outdir = os.path.expanduser("~/gee-minidrive")
+    outdir = os.path.expanduser("~/gee-fundriving")
     os.makedirs(outdir, exist_ok=True)
 
     if headless:
@@ -438,7 +438,7 @@ def main():
     pygame.init()
     surf = pygame.Surface((W, H)) if headless else pygame.display.set_mode((W, H))
     if not headless:
-        pygame.display.set_caption("Gee-MiniDrive")
+        pygame.display.set_caption("Gee-FunDriving")
     clock = pygame.time.Clock()
 
     frames_dir = os.path.join(outdir, "frames")
@@ -501,7 +501,7 @@ def main():
     pygame.quit()
 
     if headless:
-        mp4 = os.path.join(outdir, "gee_minidrive_demo.mp4")
+        mp4 = os.path.join(outdir, "gee_fundriving_demo.mp4")
         subprocess.run([
             "ffmpeg", "-y", "-loglevel", "error", "-f", "image2",
             "-pattern_type", "glob", "-i", os.path.join(frames_dir, "f*.png"),
