@@ -27,6 +27,8 @@ export function ll2xy(meta, lat, lon) {
 export function createSim(data, opts = {}) {
   const brain = opts.brain || "v4";
   const widthScale = opts.widthScale ?? 1.0;
+  // eps raut rute bisa diatur per peta (lingkaran butuh eps kecil biar mulus)
+  const simplifyEps = data.meta.simplifyEps ?? 12.0;
   const world = new World(data, widthScale);
   const comp = largestComponent(world);
   let start;
@@ -44,7 +46,7 @@ export function createSim(data, opts = {}) {
   });
   const route0 = world.route(start, goal);
   if (route0.length < 2) throw new Error("rute gak ketemu");
-  const car = new MapCar(world, start, simplify(route0.map((n) => world.nodes.get(n)), 12.0));
+  const car = new MapCar(world, start, simplify(route0.map((n) => world.nodes.get(n)), simplifyEps));
   const signals = new Signals(world, comp);
   let totalLen = 0;
   for (const s of world.segs)

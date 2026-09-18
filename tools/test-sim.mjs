@@ -16,9 +16,13 @@ const get = (f, d) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] :
 const brain = get("--brain", "v4");
 const seconds = Number(get("--seconds", "300"));
 const traffic = get("--traffic", "0") === "1" ? undefined : 0;
+const mapArg = get("--map", "loop");
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-const data = JSON.parse(fs.readFileSync(path.join(root, "maps", "loop_city.json"), "utf8"));
+const mapFile = mapArg === "loop" || mapArg === "circle"
+  ? path.join(root, "maps", mapArg === "circle" ? "circle.json" : "loop_city.json")
+  : path.resolve(mapArg);
+const data = JSON.parse(fs.readFileSync(mapFile, "utf8"));
 const sim = createSim(data, { brain, traffic });
 
 const rad = (d) => (d * Math.PI) / 180;

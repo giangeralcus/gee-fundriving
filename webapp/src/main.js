@@ -10,7 +10,10 @@ const params = new URLSearchParams(location.search);
 if (params.get("jev")) globalThis.JEV_API_URL = params.get("jev");
 const brain = params.get("brain") || "v4";
 const traffic = params.get("traffic") === "1" ? undefined : 0;
-const mapUrl = params.get("map") || "/loop_city.json";
+// peta: "loop" (default) atau "circle" — bisa juga path JSON langsung
+const mapKey = params.get("map") || "loop";
+const mapUrl = mapKey.startsWith("/") || mapKey.endsWith(".json")
+  ? mapKey : `/${mapKey === "circle" ? "circle" : "loop_city"}.json`;
 
 const $ = (id) => document.getElementById(id);
 const setLoad = (msg, pct) => {
@@ -109,6 +112,14 @@ ui.lastMissions = sim.mission.n;
 
 // handler tombol pause overlay perlu setPilot dsb — sambungkan camera-name
 $("camera-name").textContent = view.camMode;
+// world picker: ganti dunia = reload dengan param map
+const worldSel = $("world-select");
+worldSel.value = mapKey === "circle" ? "circle" : "loop";
+worldSel.onchange = () => {
+  const p = new URLSearchParams(location.search);
+  p.set("map", worldSel.value);
+  location.search = p.toString();
+};
 window.__gfd.sim = sim;
 window.__gfd.view = view;
 window.__gfd.ui = ui;

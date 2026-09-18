@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pub = path.join(here, "..", "public");
 fs.mkdirSync(pub, { recursive: true });
-for (const f of ["loop_city.json", "poi.json"]) {
+for (const f of ["loop_city.json", "circle.json", "poi.json"]) {
   const src = path.join(here, "..", "..", "maps", f);
   if (fs.existsSync(src)) fs.copyFileSync(src, path.join(pub, f));
 }

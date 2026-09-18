@@ -47,7 +47,7 @@ export class Mission {
     for (const goal of cands.slice(0, 12)) {
       const r = w.route(fromNode, goal);
       if (r.length >= 4) {
-        const pts = simplify(r.map((n) => w.nodes.get(n)), 12.0);
+        const pts = simplify(r.map((n) => w.nodes.get(n)), w.meta.simplifyEps ?? 12.0);
         if (pts.length >= 3) {
           this._set(goal, pts, car);
           return true;
@@ -60,7 +60,7 @@ export class Mission {
   newFixed(fromNode, goalNode, car) {
     const r = this.world.route(fromNode, goalNode);
     if (r.length < 2) return false;
-    const pts = simplify(r.map((n) => this.world.nodes.get(n)), 12.0);
+    const pts = simplify(r.map((n) => this.world.nodes.get(n)), this.world.meta.simplifyEps ?? 12.0);
     this._set(goalNode, pts, car);
     return true;
   }
