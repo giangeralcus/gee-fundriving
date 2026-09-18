@@ -49,7 +49,9 @@ export function createSim(data, opts = {}) {
   let totalLen = 0;
   for (const s of world.segs)
     totalLen += Math.hypot(s.bx - s.ax, s.by - s.ay);
-  const nAi = Math.max(6, Math.min(16, Math.floor(totalLen / 700)));
+  // traffic: 0 = mode penyempurnaan satu kendaraan (default web)
+  const nAi = opts.traffic === 0 ? 0
+    : Math.max(6, Math.min(16, Math.floor(totalLen / 700)));
   const traffic = new Traffic(world, comp, [sx, sy], nAi);
   const mission = new Mission(world, comp, start);
   let firstOk = false;

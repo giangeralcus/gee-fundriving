@@ -196,7 +196,23 @@ export async function decideCore(ctx, snap) {
   }
   const candDbg = cands.map((c) => [c.ex, c.ey, c.eligible, c === best]);
   candDbg.push([stop.ex, stop.ey, true, stop === best]);
-  return { off: best.off, sf: best.sf, name: best.name, src, candDbg };
+  // tabel kandidat + probabilitas softmax (buat panel & JSON inspector —
+  // ala "vector probabilities" jevpilot)
+  const all = [...cands, stop];
+  const idOf = (c) => (c === stop ? "stop" : `v${cands.indexOf(c)}`);
+  const T = 25.0;
+  const top = Math.max(...all.map((c) => c.score));
+  let sum = 0;
+  const p = all.map((c) => { const v = Math.exp((c.score - top) / T); sum += v; return v; });
+  const table = all.map((c, i) => ({
+    id: idOf(c), name: c.name, sf: c.sf, off: c.off,
+    prog: +c.prog.toFixed(1), laneErr: +c.laneErr.toFixed(1),
+    speedEnd: +c.speedEnd.toFixed(2), offroad: c.offFrac > 0.1,
+    collision: c.predTau, red: c.red,
+    score: +c.score.toFixed(1), eligible: c.eligible,
+    chosen: c === best, p: +(p[i] / sum).toFixed(3),
+  }));
+  return { off: best.off, sf: best.sf, name: best.name, src, candDbg, table, request: req };
 }
 
 function buildRequest(ctx, snap, cands, stop) {
@@ -311,6 +327,8 @@ export class Planner {
     this.manName = res.name;
     this.src = res.src;
     this.candDbg = res.candDbg;
+    this.lastTable = res.table ?? null;
+    this.lastRequest = res.request ?? null;
     this.pending = false;
   }
 

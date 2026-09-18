@@ -24,9 +24,15 @@ Tes: `node web/test_headless.js` (logika: mobil jalan, misi selesai).
 
 ## Versi web 3D (ala JevPilot) — jalan di browser
 
-Port setia ke **Vite + Three.js**: dunia 3D, nyetir manual (WASD) atau
-autopilot brain v4, planner jalan di web worker, kandidat keputusan +
-maneuver terpilih kelihatan langsung di dunia. Live: **https://gee-fundriving.pages.dev**
+Port setia ke **Vite + Three.js** dengan UI ala [JevPilot](https://jevpilot.standardagents.ai):
+tema terang glassmorphism, navigation card (belokan berikutnya + sisa jarak),
+minimap ber-route, driver dock (speed + LIMIT + tombol otopilot), inspector
+JSON live 4 Hz (payload planner + respons), dialog sampai-tujuan & game-over,
+touch thumbstick, loading screen, dan dunia siang bermarka. Planner jalan di
+web worker. Live: **https://gee-fundriving.pages.dev**
+
+Default mode **satu kendaraan** (challenge penyempurnaan mobil hero: lane
+keeping, tikungan, lampu merah). Mau mobil AI balik? `?traffic=1`.
 
 ```bash
 cd webapp
@@ -35,8 +41,10 @@ npm run dev        # http://localhost:5173
 npm run build      # dist/ — deploy: npx wrangler pages deploy dist
 ```
 
-Keys: `[J]` autopilot on/off, `[WASD/panah]` manual, `[C]` kamera chase/top, `[R]` misi baru.
-Param URL: `?brain=v3` (brain lama), `?jev=https://...` (hook LLM eksternal), `?map=/file.json`.
+Keys: `[J]` otopilot on/off, `[WASD/panah/space]` manual, `[C]` kamera
+Chase/Driver/Top, `[P]` pause, `[R]` misi baru, `{ }` inspector JSON.
+Param URL: `?brain=v3` (brain lama), `?jev=https://...` (hook LLM eksternal),
+`?traffic=1`, `?map=/file.json`.
 Smoke test headless (Node, tanpa browser): `node tools/benchmark.mjs --brain v4`.
 
 ## Loop City (default, peta internal — instan & gampang diadaptasi)
