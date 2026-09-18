@@ -29,38 +29,42 @@ IS_LOOP = "loop_city" in MAPFILE
 HIST = os.path.join("docs", "benchmark", "history.jsonl")
 
 
-def run_one(world_ready, direction, seconds):
-    (a, b) = direction
-    surf = pygame.Surface((W, H))
-    clock = pygame.time.Clock()
-    out = os.path.expanduser("~/gee-fundriving")
-    if IS_LOOP:
-        stats = fd.run_map(MAPFILE, True, seconds, surf, clock, out, record=False)
-        stats["arah"] = "Loop City (misi acak)"
-    else:
-        stats = fd.run_map(MAPFILE, True, seconds, surf, clock, out,
-                           start_coord=(a["lat"], a["lon"]),
-                           goal_coord=(b["lat"], b["lon"]),
-                           record=False)
-        stats["arah"] = f"{a['name']} -> {b['name']}"
-    return stats
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seconds", type=int, default=240)
+    ap.add_argument("--brain", default="v4", help="v4 (planner) atau v3 (pure pursuit)")
     args = ap.parse_args()
 
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
     pygame.init()
     if IS_LOOP:
         gs = pi_ = None  # loop city: misi acak, tanpa POI
+    else:
+        with open(POIFILE, encoding="utf-8") as f:
+            poi = json.load(f)
+        gs, pi_ = poi["green-sedayu"], poi["puri-indah"]
 
     results = []
-    for arah in ((gs, pi_), (pi_, gs)):
-        print(f"=== {arah[0]['name']} -> {arah[1]['name']} ===", file=sys.stderr)
-        r = run_one(None, arah, args.seconds)
-        r["versi"] = "v3-purepursuit"
+    if IS_LOOP:
+        arahs = [("Loop City (misi acak)", None, None)]
+    else:
+        arahs = [(f"{gs['name']} -> {pi_['name']}", gs, pi_),
+                 (f"{pi_['name']} -> {gs['name']}", pi_, gs)]
+    for label, a, b in arahs:
+        print(f"=== {label} ===", file=sys.stderr)
+        surf = pygame.Surface((W, H))
+        clock = pygame.time.Clock()
+        out = os.path.expanduser("~/gee-fundriving")
+        if IS_LOOP:
+            r = fd.run_map(MAPFILE, True, args.seconds, surf, clock, out,
+                           record=False, brain=args.brain)
+        else:
+            r = fd.run_map(MAPFILE, True, args.seconds, surf, clock, out,
+                           start_coord=(a["lat"], a["lon"]),
+                           goal_coord=(b["lat"], b["lon"]),
+                           record=False, brain=args.brain)
+        r["arah"] = label
+        r["versi"] = f"{args.brain}-planner" if args.brain == "v4" else "v3-purepursuit"
         results.append(r)
 
     os.makedirs(os.path.dirname(HIST), exist_ok=True)

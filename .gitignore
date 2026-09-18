@@ -7,3 +7,5 @@ frames/
 
 # node test artifact
 web/._combined_test.js
+# peta OSM berat: fetch sendiri via tools/fetch_osm.py
+maps/puri_*.json

@@ -802,6 +802,331 @@ def driver_controls(pressed):
     return steer, thr, brk
 
 
+# ------------------------------------------------------------- brain v4 ----
+# Arsitektur ala JevPilot (github.com/standardagents/jevpilot): sampling
+# kandidat maneuver -> rollout proyeksi fisika -> tag (on-road, tabrak,
+# merah) -> filter + skor lokal -> pilih satu. Maneuver (offset lajur +
+# target speed) dieksekusi antar keputusan ~4 Hz. Hook LLM: build_request()
+# merangkum state jadi tabel ringkas; set JEV_API_URL biar model eksternal
+# yang milih kandidat (balas {"choice": "v3"}), gagal/tak ada -> skor lokal.
+
+PLANNER_EVERY = 15          # keputusan tiap 15 frame (4 Hz, ala decisionInterval)
+ROLLOUT_STEPS = 90          # horizon 1.5 detik @60fps
+CAND_SPEEDS = (1.0, 0.75, 0.5, 0.25)   # fraksi MAXV
+CAND_OFFSETS = (-3.0, 0.0, 2.0)        # meter; positif = ke kanan rute
+IMMINENT_S = 0.5            # kontak < 0.5 detik = imminent (gak layak)
+OFF_ROAD_M = 11.0           # > ini dari segmen jalan = off-road (halfw + margin)
+STOP_BUF = 8.0              # buffer aman di belakang lead / garis berhenti (m)
+BRAKE_V4 = 0.15             # decel rollout, sama dgn MapCar.step
+
+
+def route_arc(route):
+    """Panjang kumulatif rute buat lookup goal-point O(log n)."""
+    cum = [0.0]
+    for a, b in zip(route, route[1:]):
+        cum.append(cum[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
+    return cum
+
+
+def route_point_at(route, cum, s):
+    """Posisi + arah (derajat) di sepanjang rute pada jarak s meter arc."""
+    s = max(0.0, min(s, cum[-1]))
+    lo, hi = 0, len(cum) - 1
+    while lo < hi - 1:
+        mid = (lo + hi) // 2
+        if cum[mid] <= s:
+            lo = mid
+        else:
+            hi = mid
+    ax, ay = route[lo]
+    bx, by = route[lo + 1]
+    f = (s - cum[lo]) / (cum[lo + 1] - cum[lo] + 1e-6)
+    return (ax + (bx - ax) * f, ay + (by - ay) * f,
+            math.degrees(math.atan2(by - ay, bx - ax)))
+
+
+def dist_to_road(world, x, y):
+    """Jarak posisi ke segmen jalan terdekat (grid 3x3 cell sekitar)."""
+    cx, cy = int(x // CELL), int(y // CELL)
+    best = 1e9
+    for gx in (cx - 1, cx, cx + 1):
+        for gy in (cy - 1, cy, cy + 1):
+            for i in world.seg_grid.get((gx, gy), ()):
+                ax, ay, bx, by = world.segs[i][:4]
+                abx, aby = bx - ax, by - ay
+                tt = max(0.0, min(1.0, ((x - ax) * abx + (y - ay) * aby)
+                                  / (abx * abx + aby * aby + 1e-6)))
+                d = math.hypot(x - ax - abx * tt, y - ay - aby * tt)
+                if d < best:
+                    best = d
+    return best
+
+
+def remote_decide(request):
+    """Hook brain eksternal (roadmap: Jev API asli). Endpoint kompatibel:
+    POST JSON request -> balas {"choice": "v5"} / {"choice": "stop"}.
+    Gak diset / gagal / timeout -> balik None, scorer lokal yang mutusin."""
+    url = os.environ.get("JEV_API_URL")
+    if not url:
+        return None
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            url, data=json.dumps(request).encode(),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=2.0) as r:
+            return json.loads(r.read().decode())
+    except Exception:
+        return None
+
+
+class Planner:
+    """Brain v4 map mode: candidate sampling + scorer lokal, eksekusi
+    maneuver antar keputusan (planner milih, pure pursuit nunjukin jalan)."""
+
+    def __init__(self, world, signals, traffic):
+        self.world = world
+        self.signals = signals
+        self.traffic = traffic
+        self.route = None
+        self.cum = None
+        self.man = (0.0, 1.0)      # maneuver terpilih (offset m, fraksi MAXV)
+        self.man_name = "Lurus"
+        self.src = "lokal"
+        self.cand_dbg = []          # endpoint kandidat buat debug render
+        self.frame = -999           # paksa putusan di frame pertama
+        self.s = 0.0
+
+    def _sync_route(self, car):
+        if self.route is not car.route:
+            self.route = car.route
+            self.cum = route_arc(car.route)
+            self.frame = -999       # misi baru -> putusan ulang segera
+
+    def _hero_arc(self, car):
+        """Posisi hero di sepanjang rute (meter arc), dari proyeksi MapCar."""
+        t, _cx, _cy, _d = car._project()
+        return self.cum[car.wp_i] + t * (self.cum[car.wp_i + 1] - self.cum[car.wp_i])
+
+    def _red_ahead(self, car):
+        """Lampu merah di koridor depan: (jarak plane m, sisa merah frame)."""
+        fx, fy = math.cos(math.radians(car.heading)), math.sin(math.radians(car.heading))
+        best = None
+        for j, (lx, ly) in enumerate(self.signals.pos):
+            dx, dy = lx - car.x, ly - car.y
+            fwd = dx * fx + dy * fy
+            if not (4 < fwd < 90) or abs(-dx * fy + dy * fx) > 13:
+                continue
+            axis = 0 if abs(fx) >= abs(fy) else 1
+            if not self.signals.green(self.signals.nodes_at(j), axis):
+                rem = self.signals.CYCLE - (self.signals.frame % self.signals.CYCLE)
+                if best is None or fwd < best[0]:
+                    best = (fwd, rem)
+        return best
+
+    def _rollout(self, car, s0, off, sf, preds, red, gap=None, curv=0.0):
+        """Proyeksi satu maneuver: ghost disimulasi dgn fisika MapCar persis
+        (mirror MapCar.step biar prediksi = eksekusi), lalu dinilai."""
+        tgt_v = sf * car.MAXV
+        # cap kurva: tikungan tajam = pelan (continuation dari antisipasi v3).
+        # Lantai 0.15 = creep: pure pursuit butuh gerak buat belok, jangan
+        # pernah nol persis di depan tikungan (deadlock)
+        tgt_v = min(tgt_v, car.MAXV * max(0.15, min(1.0, 1.25 - curv / 40.0)))
+        gx, gy, ghd, v = car.x, car.y, car.heading, car.speed
+        trav = 0.0
+        offroad = checked = 0
+        pred_tau = None
+        crossed_red = False
+        for i in range(ROLLOUT_STEPS):
+            # cap kecepatan biar mampu berhenti sebelum lead / garis merah
+            # (ala maneuverVelocity stop_at_line jevpilot: sqrt(2*decel*room))
+            tgt_eff = tgt_v
+            if gap is not None:
+                room = gap - trav - STOP_BUF
+                tgt_eff = min(tgt_eff,
+                              math.sqrt(2 * BRAKE_V4 * room) if room > 0 else 0.0)
+            if red is not None:
+                room = red[0] - trav - 3.0
+                tgt_eff = min(tgt_eff,
+                              math.sqrt(2 * BRAKE_V4 * room) if room > 0 else 0.0)
+            # pure pursuit ke titik lookahead di rute + offset lajur
+            px, py, tang = route_point_at(
+                self.route, self.cum, s0 + trav + car._lookahead())
+            tx = px - math.sin(math.radians(tang)) * (car.LANE_OFF + off)
+            ty = py + math.cos(math.radians(tang)) * (car.LANE_OFF + off)
+            he = (math.degrees(math.atan2(ty - gy, tx - gx)) - ghd + 180) % 360 - 180
+            steer = max(-1.0, min(1.0, he / 40.0))
+            ghd = (ghd + steer * 3.4 * (0.45 + 0.55 * v / car.MAXV)) % 360
+            if v > tgt_eff + 0.05:
+                v = max(0.0, v - BRAKE_V4)
+            elif v < tgt_eff - 0.05:
+                v = min(car.MAXV, v + 0.05)
+            a = math.radians(ghd)
+            gx += math.cos(a) * v
+            gy += math.sin(a) * v
+            trav += v
+            if i % 5:
+                continue
+            # tiap 5 frame: cek off-road + kontak vs AI + nyebrang merah
+            checked += 1
+            if dist_to_road(self.world, gx, gy) > OFF_ROAD_M:
+                offroad += 1
+            tau = i / FPS
+            if pred_tau is None:
+                # kontak dinilai di frame ghost (box depan, ala deteksi tabrak
+                # asli) — bukan radius, biar lawan arah di lajur sebelah gak
+                # ke-flag
+                ca, sa = math.cos(a), math.sin(a)
+                for (cx0, cy0, cvx, cvy) in preds:
+                    dxo, dyo = cx0 + cvx * tau - gx, cy0 + cvy * tau - gy
+                    f = dxo * ca + dyo * sa
+                    l = -dxo * sa + dyo * ca
+                    if -6.0 < f < 9.0 and abs(l) < 5.5:
+                        pred_tau = tau
+                        break
+            if red is not None and red[1] - i > 0 and trav > red[0] and v > 0.4:
+                crossed_red = True
+        end = route_point_at(self.route, self.cum, s0 + trav)
+        tx = end[0] - math.sin(math.radians(end[2])) * (car.LANE_OFF + off)
+        ty = end[1] + math.cos(math.radians(end[2])) * (car.LANE_OFF + off)
+        lane_err = math.hypot(gx - tx, gy - ty)
+        he_end = (end[2] - ghd + 180) % 360 - 180
+        return {"off": off, "sf": sf, "ex": gx, "ey": gy,
+                "prog": trav, "lane_err": lane_err, "he": he_end,
+                "speed_end": v, "off_frac": offroad / max(checked, 1),
+                "pred_tau": pred_tau,
+                "imminent": pred_tau is not None and pred_tau < IMMINENT_S,
+                "predicted": pred_tau is not None,
+                "red": crossed_red,
+                "name": "Rem" if sf == 0 else
+                        f"{'Kiri' if off < -1 else 'Kanan' if off > 1 else 'Lurus'} {sf:.2f}x"}
+
+    def decide(self, car, state):
+        self.s = self._hero_arc(car)
+        # prediksi AI 1.5 detik: gerak lurus kecepatan konstan
+        preds = []
+        for tc in self.traffic.cars:
+            a = math.radians(tc["heading"])
+            preds.append((tc["x"], tc["y"], math.cos(a) * tc["speed"],
+                          math.sin(a) * tc["speed"]))
+        red = self._red_ahead(car)
+        gap = state.get("ahead_gap")
+        curv = state.get("curv", 0.0)
+        cands = [self._rollout(car, self.s, off, sf, preds, red, gap, curv)
+                 for sf in CAND_SPEEDS for off in CAND_OFFSETS]
+        for c in cands:
+            # skor: maju selo, tapi error lajur/arah & risiko bayar mahal
+            c["score"] = (c["prog"] - 2.0 * c["lane_err"] - 0.03 * abs(c["he"])
+                          + 0.5 * c["speed_end"]
+                          - 40.0 * c["off_frac"]
+                          - (900.0 if c["imminent"] else 0.0)
+                          - (800.0 + 60.0 / max(0.2, c["pred_tau"] or 1.5)
+                             if c["predicted"] else 0.0)
+                          - 300.0 * c["red"])
+            # ala movingCandidates jevpilot: kandidat berkontak / keluar jalan
+            # gak masuk moving set
+            c["eligible"] = not c["predicted"] and c["off_frac"] <= 0.1
+        stop = self._rollout(car, self.s, 0.0, 0.0, preds, red, gap, curv)
+        stop["score"] = -100.0 - 0.3 * car.speed   # rem itu pilihan terakhir
+        required = (gap is not None and gap < 12) or (red is not None and red[0] < 35)
+        pool = [c for c in cands if c["eligible"]] or cands   # darurat: least-bad
+        if required:
+            pool = pool + [stop]
+        best = max(pool, key=lambda c: c["score"])
+        # hook model eksternal: boleh timpa pilihan scorer lokal
+        self.src = "lokal"
+        resp = remote_decide(self.build_request(car, state, cands, stop, red))
+        if resp and isinstance(resp.get("choice"), str):
+            ch = resp["choice"]
+            pick = None
+            if ch == "stop":
+                pick = stop if any(c is stop for c in pool) else None
+            elif ch.startswith("v") and ch[1:].isdigit():
+                k = int(ch[1:])
+                if 0 <= k < len(cands) and any(c is cands[k] for c in pool):
+                    pick = cands[k]
+            if pick is not None:
+                best = pick
+                self.src = resp.get("src", "jev")
+        self.man = (best["off"], best["sf"])
+        self.man_name = best["name"]
+        self.cand_dbg = [(c["ex"], c["ey"], c["eligible"], c is best)
+                         for c in cands] + [(stop["ex"], stop["ey"], True, stop is best)]
+
+    def drive(self, car, state, fi):
+        """Tiap frame: eksekusi maneuver terpilih; tiap PLANNER_EVERY frame
+        putuskan maneuver baru."""
+        self._sync_route(car)
+        self.s = self._hero_arc(car)
+        if fi - self.frame >= PLANNER_EVERY:
+            self.frame = fi
+            self.decide(car, state)
+        off, sf = self.man
+        # steering: pure pursuit ke titik lookahead + offset lajur terpilih
+        px, py, tang = route_point_at(self.route, self.cum, self.s + car._lookahead())
+        gx = px - math.sin(math.radians(tang)) * (car.LANE_OFF + off)
+        gy = py + math.cos(math.radians(tang)) * (car.LANE_OFF + off)
+        he = (math.degrees(math.atan2(gy - car.y, gx - car.x)) - car.heading + 180) % 360 - 180
+        steer = max(-1.0, min(1.0, he / 40.0))
+        # speed: target maneuver, di-cap kurva (mirror rollout biar eksekusi
+        # = prediksi); ACC jadi lapisan kedua (planner cuma dari snapshot 4 Hz,
+        # gap berubah tiap frame)
+        tgt_v = sf * car.MAXV
+        tgt_v = min(tgt_v, car.MAXV * max(0.15, min(1.0, 1.25 - state.get("curv", 0.0) / 40.0)))
+        gap = state.get("ahead_gap")
+        acc = ""
+        if gap is not None and gap < 10:
+            thr, brk, acc = 0.0, 1.0, "REM!"
+        elif gap is not None and gap < 20:
+            thr, brk, acc = 0.0, 0.7, "REM!"
+        elif car.speed < tgt_v - 0.05:
+            thr, brk = 1.0, 0.0
+        elif car.speed > tgt_v + 0.1:
+            thr, brk = 0.0, min(1.0, (car.speed - tgt_v) / 1.0)
+        else:
+            thr, brk = 0.0, 0.0
+        if gap is not None and 20 <= gap < 35:
+            thr, acc = 0.0, "ikut"
+        elif gap is not None and 35 <= gap < 60:
+            thr, acc = min(thr, 0.35), "geser"
+        # anti-stall: nol speed tanpa rintangan -> kasi gas biar gak mati
+        # mesin di depan tikungan / habis putusan rem
+        if car.speed < 0.05 and gap is None and tgt_v > 0.2:
+            thr, brk = 0.35, 0.0
+        return steer, thr, brk, {"he": he, "lat": state["lateral"], "acc": acc,
+                                 "man": self.man_name, "src": self.src}
+
+    def build_request(self, car, state, cands, stop, red):
+        """State ringkas stateless ala prepareJevRequest: konteks + tabel
+        kandidat. Buat hook JEV_API_URL (dan debugging payload)."""
+        cands_tbl = {f"v{i}": {
+            "name": c["name"], "off_m": c["off"], "speed_factor": c["sf"],
+            "progress_m": round(c["prog"], 1),
+            "lane_error_m": round(c["lane_err"], 1),
+            "end_speed": round(c["speed_end"], 2),
+            "on_road": c["off_frac"] <= 0.1,
+            "collision_in_s": round(c["pred_tau"], 2) if c["pred_tau"] else None,
+            "crosses_red": c["red"],
+        } for i, c in enumerate(cands)}
+        cands_tbl["stop"] = {
+            "name": "Rem", "off_m": 0.0, "speed_factor": 0.0,
+            "progress_m": round(stop["prog"], 1),
+            "lane_error_m": round(stop["lane_err"], 1),
+            "end_speed": 0.0, "on_road": True,
+            "collision_in_s": None, "crosses_red": False,
+        }
+        return {
+            "speed": round(car.speed, 2),
+            "limit": car.MAXV,
+            "lane_offset": round(car.LANE_OFF + self.man[0], 1),
+            "red_ahead_m": round(red[0], 1) if red else None,
+            "red_remaining_s": round(red[1] / FPS, 1) if red else None,
+            "lead_gap_m": state.get("ahead_gap"),
+            "destination_m": round(self.cum[-1] - self.s, 1),
+            "questions": {"vector": "pilih id kandidat fastest useful progress"},
+            "candidates": cands_tbl,
+        }
+
 def largest_component(world):
     best = set()
     seen = set()
@@ -953,7 +1278,8 @@ def draw_street_name(surf, world, cam, car, cached):
     return name
 
 
-def draw_map(surf, world, car, cam, state, dec, stats, traffic, signals, mission, name_cache, tiles):
+def draw_map(surf, world, car, cam, state, dec, stats, traffic, signals, mission,
+             name_cache, tiles, planner=None):
     draw_world(surf, world, cam, tiles)
     # rute (casing + garis)
     if len(car.route) > 1:
@@ -977,6 +1303,17 @@ def draw_map(surf, world, car, cam, state, dec, stats, traffic, signals, mission
     cx, cy = cam.apply(car.x, car.y)
     a = math.radians(car.heading)
     z = cam.zoom
+    # endpoint kandidat planner (ala Candidates view jevpilot): biru = terpilih,
+    # cyan = layak, merah redup = kefilter
+    if planner is not None:
+        for ex, ey, ok, chosen in planner.cand_dbg:
+            sx, sy = cam.apply(ex, ey)
+            if chosen:
+                pygame.draw.line(surf, (120, 190, 255), (cx, cy), (sx, sy), 2)
+                pygame.draw.circle(surf, (120, 190, 255), (int(sx), int(sy)), 4)
+            else:
+                pygame.draw.circle(surf, (150, 220, 220) if ok else (150, 90, 90),
+                                   (int(sx), int(sy)), 2)
     pts = [(cx + dx * math.cos(a) * z - dy * math.sin(a) * z,
             cy + dx * math.sin(a) * z + dy * math.cos(a) * z)
            for dx, dy in ((CAR_LEN / 2, 0), (-CAR_LEN / 2, CAR_W / 2), (-CAR_LEN / 2, -CAR_W / 2))]
@@ -995,6 +1332,7 @@ def draw_map(surf, world, car, cam, state, dec, stats, traffic, signals, mission
         f"speed {car.speed:.1f}  alive {car.alive_time // FPS}s  wp {car.wp_i}/{len(car.route)}",
         f"he {dec.get('he', 0):.0f}  lat {dec.get('lat', 0):.0f}m  {dec.get('acc', '')} {name}".replace("  ", " "),
         f"misi #{mission.n + 1} -> {gdist:.0f}m | skor {mission.score} | merah {mission.reds} tabrak {mission.crashes}",
+        (f"man {dec.get('man', '-')} [{dec.get('src', '')}]" if planner is not None else ""),
     ] + ([stats] if stats else []))
 
 
@@ -1014,7 +1352,7 @@ def parse_ll(s):
 
 def run_map(mapfile, headless, seconds, surf, clock, outdir,
             start_coord=None, goal_coord=None, heading=None, record=True,
-            width_scale=1.35, auto_start=True):
+            width_scale=1.35, brain="v4", auto_start=True):
     frames_dir = os.path.join(outdir, "frames")
     if headless:
         os.makedirs(frames_dir, exist_ok=True)
@@ -1040,6 +1378,7 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
     total_len = sum(math.hypot(s[2] - s[0], s[3] - s[1]) for s in world.segs)
     n_ai = max(6, min(16, int(total_len / 700)))
     traffic = Traffic(world, comp, (sx, sy), n=n_ai)
+    planner = Planner(world, signals, traffic) if brain == "v4" else None
     mission = Mission(world, comp, start)
     first_ok = False
     if goal_coord:
@@ -1076,6 +1415,7 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
     stall_frames = 0
     man_steer = 0.0
     auto = auto_start or headless  # headless gak ada sopir -> assistant wajib ON
+    hard_stall = 0
     for fi in range(total):
         state = car.sense()
         # safety-net: keluar jalur > 35m -> snap balik ke rute (cuma mode assistant;
@@ -1099,7 +1439,10 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
                     if tc_fwd > 0.25 or tc["speed"] < 0.1:
                         gap = fwd
         state["ahead_gap"] = gap
-        steer, thr, brk, dec = map_brain(state)
+        if planner is not None:
+            steer, thr, brk, dec = planner.drive(car, state, fi)
+        else:
+            steer, thr, brk, dec = map_brain(state)
         dec["mode"] = "ASSISTANT [F]" if auto else "MANUAL [F]"
         # berhenti di lampu merah: lampu terdekat di koridor depan
         si_best, sd_best = -1, 1e9
@@ -1137,8 +1480,15 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
             stall_frames += 1
         else:
             stall_frames = 0
-        if stall_frames > 240:
+        # tier 2: diam total 8 detik apa pun gapnya = deadlock beneran
+        # (standoff lawan arah; siklus lampu cuma 7 detik, jadi aman)
+        if car.speed < 0.15:
+            hard_stall += 1
+        else:
+            hard_stall = 0
+        if stall_frames > 240 or hard_stall > 480:
             stall_frames = 0
+            hard_stall = 0
             best_j, best_d = -1, 70.0
             for j, tc in enumerate(traffic.cars):
                 d = math.hypot(tc["x"] - car.x, tc["y"] - car.y)
@@ -1177,6 +1527,8 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
         if state["lateral"] > state["halfw"] + 4:
             off_frames += 1
         frames = fi + 1
+        draw_map(surf, world, car, cam, state, dec, f"{clock.get_fps():.0f} fps",
+                 traffic, signals, mission, name_cache, tiles, planner)
         # misi selesai -> skor + misi baru
         if car.finished:
             pts = mission.complete(car)
@@ -1524,6 +1876,7 @@ def main():
     start_coord = parse_ll(args[args.index("--start") + 1]) if "--start" in args else None
     goal_coord = parse_ll(args[args.index("--goal") + 1]) if "--goal" in args else None
     heading = float(args[args.index("--heading") + 1]) if "--heading" in args else None
+    brain = args[args.index("--brain") + 1] if "--brain" in args else "v4"
     if "--route" in args:
         a, b = args[args.index("--route") + 1], args[args.index("--route") + 2]
         mapdir = os.path.dirname(mapfile) if mapfile else "maps"
@@ -1568,7 +1921,7 @@ def main():
 
     if mapfile:
         run_map(mapfile, headless, seconds, surf, clock, outdir,
-                start_coord, goal_coord, heading, auto_start=auto_start)
+                start_coord, goal_coord, heading, brain=brain, auto_start=auto_start)
         pygame.quit()
     else:
         run_circuit(headless, seconds, surf, clock, auto_start=auto_start)
