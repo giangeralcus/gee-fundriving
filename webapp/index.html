@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Gee-FunDriving 3D</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #1a1c22; overflow: hidden; }
+    #app { width: 100vw; height: 100vh; }
+    #app canvas { display: block; }
+    #hud {
+      position: fixed; top: 10px; left: 10px;
+      font: 13px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+      color: #dcdcdc; background: rgba(20, 22, 28, 0.72);
+      padding: 8px 12px; border-radius: 6px; white-space: pre;
+      pointer-events: none;
+    }
+    #legend {
+      position: fixed; bottom: 10px; left: 10px;
+      font: 12px/1.6 ui-monospace, Consolas, monospace;
+      color: #9aa0ac; background: rgba(20, 22, 28, 0.72);
+      padding: 6px 10px; border-radius: 6px; pointer-events: none;
+    }
+    #msg {
+      position: fixed; top: 40%; width: 100%; text-align: center;
+      font: 15px ui-monospace, Consolas, monospace; color: #e65050;
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div id="hud"></div>
+  <div id="legend">[J] autopilot on/off &nbsp; [WASD/arah] nyetir manual &nbsp; [C] kamera chase/top &nbsp; [R] misi baru</div>
+  <div id="msg"></div>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

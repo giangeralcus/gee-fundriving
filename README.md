@@ -6,7 +6,7 @@ Simulasi nyetir 2D top-down: **1 mobil autonomous** keliling sirkuit dengan *Sys
 
 ![gameplay](docs/demo.png)
 
-## Versi web (baru! — Loop City di browser)
+## Versi web ringan (2D Canvas — port jalur desktop)
 
 ```bash
 # cara 1: buka langsung (offline, tanpa server)
@@ -21,6 +21,23 @@ Port JavaScript + Canvas dari versi desktop: fisika 60Hz fixed-step, render
 pure pursuit + ACC + lampu merah, traffic AI, mode misi, dan kendali manual
 (WASD/arrow + `F` ambil-alih). Peta Loop City di-embed (`map_loop_city.js`).
 Tes: `node web/test_headless.js` (logika: mobil jalan, misi selesai).
+
+## Versi web 3D (ala JevPilot) — jalan di browser
+
+Port setia ke **Vite + Three.js**: dunia 3D, nyetir manual (WASD) atau
+autopilot brain v4, planner jalan di web worker, kandidat keputusan +
+maneuver terpilih kelihatan langsung di dunia. Live: **https://gee-fundriving.pages.dev**
+
+```bash
+cd webapp
+npm install
+npm run dev        # http://localhost:5173
+npm run build      # dist/ — deploy: npx wrangler pages deploy dist
+```
+
+Keys: `[J]` autopilot on/off, `[WASD/panah]` manual, `[C]` kamera chase/top, `[R]` misi baru.
+Param URL: `?brain=v3` (brain lama), `?jev=https://...` (hook LLM eksternal), `?map=/file.json`.
+Smoke test headless (Node, tanpa browser): `node tools/benchmark.mjs --brain v4`.
 
 ## Loop City (default, peta internal — instan & gampang diadaptasi)
 
@@ -119,12 +136,13 @@ docs/demo.png    # screenshot gameplay
 
 - [ ] Mode sedang: mobil + motor, obstacle acak, traffic
 - [ ] Multi-agent + leaderboard
-- [x] Hook brain eksternal: `JEV_API_URL` (payload tabel kandidat ala JevPilot) — tinggal arahkan ke Jev API asli kalau udah terbuka
+- [x] Hook brain eksternal: `JEV_API_URL` / `?jev=` (payload tabel kandidat ala JevPilot) — tinggal arahkan ke Jev API asli kalau udah terbuka
+- [x] Port web 3D ala JevPilot: Vite + Three.js, worker planner, deploy Cloudflare Pages
 - [ ] Brain generational (evolution) buat belajar hindar
 
 ## Referensi
 
-- [JevPilot](https://github.com/standardagents/jevpilot) ([demo online](https://jevpilot.standardagents.ai)) — demo Tesla FSD ala Jev yang open source; arsitektur candidate sampling + pemilihan model jadi dasar brain v4
+- [JevPilot](https://github.com/standardagents/jevpilot) ([demo online](https://jevpilot.standardagents.ai)) — demo Tesla FSD ala Jev yang open source; arsitektur candidate sampling + pemilihan model jadi dasar brain v4, dan port web 3D kami ngikutin gaya demo-nya
 
 ---
 Dibuat di D4 oleh bakasang untuk Gee 🏁
