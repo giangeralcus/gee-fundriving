@@ -5,7 +5,8 @@
 // biar model eksternal yang milih (balas {"choice":"v3"}); gagal -> skor lokal.
 // Port setia dari Planner di fundriving.py.
 
-import { wrapDeg, wrapErr } from "./car.js";
+import { wrapDeg, wrapErr, MapCar, DT } from "./car.js";
+import { routeCaps, capAtV } from "./world.js";
 import { Signals } from "./signals.js";
 
 const CYCLE = Signals.CYCLE;
@@ -17,9 +18,9 @@ export const ROLLOUT_STEPS = 90;   // horizon 1.5 detik @60fps
 export const CAND_SPEEDS = [1.0, 0.75, 0.5, 0.25];
 export const CAND_OFFSETS = [-3.0, 0.0, 2.0];
 export const IMMINENT_S = 0.5;     // kontak < 0.5 dtk = imminent
-export const OFF_ROAD_M = 11.0;    // halfw + margin
-export const STOP_BUF = 8.0;       // buffer aman di belakang lead/garis (m)
-export const BRAKE_V4 = 0.15;      // decel rollout, sama dgn MapCar.step
+export const OFF_ROAD_M = 11.0;    // fallback; normalnya dinamis (halfw + 2.2)
+export const STOP_BUF = 2.5;       // buffer berhenti di belakang lead/garis (m)
+export const BRAKE_V4 = MapCar.BRAKE;  // decel rollout = rem mobil (m/s²)
 export const FPS = 60;
 
 export function routeArc(route) {
@@ -90,23 +91,23 @@ export async function remoteDecide(request) {
 // dipakai utk worker ATAU fallback lokal.
 export async function decideCore(ctx, snap) {
   const { route, cum, segs, segGrid } = ctx;
-  const { x, y, heading, speed, maxv, laneOff, lookahead } = snap;
+  const { x, y, heading, speed, maxv, laneOff, lookahead, offRoadM = OFF_ROAD_M } = snap;
   const s0 = snap.s0;
   // rollout satu kandidat
   const rollout = (off, sf) => {
     let tgtV = sf * maxv;
-    // cap kurva dgn lantai creep: pure pursuit butuh gerak buat belok
-    tgtV = Math.min(tgtV, maxv * Math.max(0.15, Math.min(1.0, 1.25 - snap.curv / 40.0)));
     let gx = x, gy = y, ghd = heading, v = speed;
     let trav = 0.0, offroad = 0, checked = 0, predTau = null, crossedRed = false;
     for (let i = 0; i < ROLLOUT_STEPS; i++) {
       let tgtEff = tgtV;
+      // cap profil tikungan (ala routeSpeedLimit) + rem menuju lead/garis
+      tgtEff = Math.min(tgtEff, capAtV(snap.caps, s0 + trav));
       if (snap.gap != null) {
         const room = snap.gap - trav - STOP_BUF;
         tgtEff = Math.min(tgtEff, room > 0 ? Math.sqrt(2 * BRAKE_V4 * room) : 0.0);
       }
       if (snap.red) {
-        const room = snap.red[0] - trav - 3.0;
+        const room = snap.red[0] - trav - 2.0;
         tgtEff = Math.min(tgtEff, room > 0 ? Math.sqrt(2 * BRAKE_V4 * room) : 0.0);
       }
       // pure pursuit ke titik lookahead di rute + offset lajur
@@ -116,27 +117,28 @@ export async function decideCore(ctx, snap) {
       const desired = deg(Math.atan2(ty - gy, tx - gx));
       const he = wrapErr(desired - ghd);
       const steer = Math.max(-1, Math.min(1, he / 40.0));
-      ghd = wrapDeg(ghd + steer * 3.4 * (0.45 + 0.55 * v / maxv));
-      if (v > tgtEff + 0.05) v = Math.max(0.0, v - BRAKE_V4);
-      else if (v < tgtEff - 0.05) v = Math.min(maxv, v + 0.05);
+      const yaw = steer * MapCar.YAW_MAX * (0.45 + 0.55 * v / maxv);
+      ghd = wrapDeg(ghd + yaw * DT);
+      if (v > tgtEff + 0.1) v = Math.max(0.0, v - BRAKE_V4 * DT);
+      else if (v < tgtEff - 0.1) v = Math.min(maxv, v + MapCar.ACC * DT);
       const a = rad(ghd);
-      gx += Math.cos(a) * v;
-      gy += Math.sin(a) * v;
-      trav += v;
+      gx += Math.cos(a) * v * DT;
+      gy += Math.sin(a) * v * DT;
+      trav += v * DT;
       if (i % 5) continue;
       checked++;
-      if (distToRoad(segs, segGrid, gx, gy) > OFF_ROAD_M) offroad++;
+      if (distToRoad(segs, segGrid, gx, gy) > offRoadM) offroad++;
       const tau = i / FPS;
       if (predTau === null) {
-        // kontak dinilai di frame ghost (box depan, ala deteksi tabrak asli)
+        // kontak dinilai di frame ghost (box bodi + margin, skala mobil 4.6m)
         const ca = Math.cos(a), sa = Math.sin(a);
         for (const p of snap.preds) {
           const dxo = p[0] + p[2] * tau - gx, dyo = p[1] + p[3] * tau - gy;
           const f = dxo * ca + dyo * sa, l = -dxo * sa + dyo * ca;
-          if (-6.0 < f && f < 9.0 && Math.abs(l) < 5.5) { predTau = tau; break; }
+          if (-3.0 < f && f < 4.5 && Math.abs(l) < 2.4) { predTau = tau; break; }
         }
       }
-      if (snap.red && snap.red[1] - i > 0 && trav > snap.red[0] && v > 0.4)
+      if (snap.red && snap.red[1] - i > 0 && trav > snap.red[0] && v > 1.5)
         crossedRed = true;
     }
     const end = routePointAt(route, cum, s0 + trav);
@@ -314,6 +316,9 @@ export class Planner {
       x: car.x, y: car.y, heading: car.heading, speed: car.speed,
       maxv: car.maxv, laneOff: car.laneOff,
       lookahead: car.lookahead(),
+      // ambang off-road ikut lebar jalan (halfw + setengah lebar mobil + margin)
+      offRoadM: this.world.nearestSegW(car.x, car.y) + 2.2,
+      caps: car.caps,
       preds,
       red: this._redAhead(car),
       gap: state.aheadGap,
@@ -356,9 +361,8 @@ export class Planner {
     const desired = deg(Math.atan2(gy - car.y, gx - car.x));
     const he = wrapErr(desired - car.heading);
     const steer = Math.max(-1, Math.min(1, he / 40.0));
-    // speed: target maneuver, di-cap kurva (mirror rollout); ACC lapisan kedua
-    let tgtV = sf * car.maxv;
-    tgtV = Math.min(tgtV, car.maxv * Math.max(0.15, Math.min(1.0, 1.25 - (state.curv ?? 0.0) / 40.0)));
+    // speed: target maneuver, di-cap profil tikungan (mirror rollout)
+    let tgtV = Math.min(sf * car.maxv, car.capAt(this.s + 0.5 * car.lookahead()));
     const gap = state.aheadGap;
     let acc = "", thr, brk;
     if (gap != null && gap < 10) { thr = 0.0; brk = 1.0; acc = "REM!"; }
@@ -368,8 +372,8 @@ export class Planner {
     else { thr = 0.0; brk = 0.0; }
     if (gap != null && gap >= 20 && gap < 35) { thr = 0.0; acc = "ikut"; }
     else if (gap != null && gap >= 35 && gap < 60) { thr = Math.min(thr, 0.35); acc = "geser"; }
-    // anti-stall: nol speed tanpa rintangan -> kasi gas
-    if (car.speed < 0.05 && gap == null && tgtV > 0.2) { thr = 0.35; brk = 0.0; }
+        // anti-stall: nyaris berhenti tanpa rintangan -> kasi gas
+        if (car.speed < 0.15 && gap == null && tgtV > 0.5) { thr = 0.35; brk = 0.0; }
     return [steer, thr, brk, { he, lat: state.lateral, acc, man: this.manName, src: this.src }];
   }
 }

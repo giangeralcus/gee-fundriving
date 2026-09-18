@@ -119,8 +119,8 @@ export class UI {
     const { sim, view } = this;
     this._frame++;
     const car = sim.car, m = sim.mission;
-    // speed & dock
-    $("speed").textContent = Math.round(car.speed * 10);
+    // speed & dock (skala 1:1: m/s -> km/j)
+    $("speed").textContent = Math.round(car.speed * 3.6);
     const pilot = this.h.isPilot();
     $("pilot-label").textContent = pilot ? "Otopilot aktif" : "Ambil alih";
     $("autopilot").setAttribute("aria-checked", String(pilot));
@@ -218,7 +218,7 @@ export class UI {
     const m = this.sim.mission;
     if (m.crashes > this.lastCrashes) {
       this.lastCrashes = m.crashes;
-      $("crash-speed").textContent = Math.round(this.sim.car.speed * 10 + 12);
+      $("crash-speed").textContent = Math.round(this.sim.car.speed * 3.6);
       $("crash-distance").textContent = Math.round(m.driven);
       if (!$("crash-dialog").open) $("crash-dialog").showModal();
       this.shake();

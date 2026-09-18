@@ -21,6 +21,7 @@ const setLoad = (msg, pct) => {
 let sim = null, view = null, ui = null;
 let auto = true, paused = false;
 let steerManual = 0;
+let turbo = 1;   // 1×/2×/4× — skala 1:1 bikin misi real-time, ini buat ngebut nonton
 const keys = {};
 
 addEventListener("keydown", (ev) => {
@@ -29,6 +30,10 @@ addEventListener("keydown", (ev) => {
   if (ev.code === "KeyC" && view) ui.toast(`kamera: ${view.cycleCam()}`);
   if (ev.code === "KeyP" && view) togglePause();
   if (ev.code === "KeyR" && sim) newMission();
+  if (ev.code === "KeyT") {
+    turbo = turbo === 1 ? 2 : turbo === 2 ? 4 : 1;
+    ui?.toast(`turbo ${turbo}×`);
+  }
   if (ev.code === "Space") ev.preventDefault();
 });
 addEventListener("keyup", (ev) => { keys[ev.code] = false; });
@@ -77,6 +82,7 @@ await new Promise((r) => setTimeout(r, 30));   // biar teks loading ke-sempat re
 sim = createSim(data, {
   brain,
   traffic,
+  widthScale: 1.0,   // skala 1:1 — peta loop city sudah real-meter
   makeWorker: brain === "v4" && typeof Worker !== "undefined"
     ? () => new Worker(new URL("./planner.worker.js", import.meta.url), { type: "module" })
     : null,
@@ -117,7 +123,8 @@ function pump(maxDt) {
   let dt = performance.now() - last;
   last = performance.now();
   if (dt > maxDt) dt = maxDt;
-  fpsSm += (1000 / Math.max(dt, 1) - fpsSm) * 0.05;
+  dt *= turbo;   // turbo = maju waktu lebih cepat, fisika tetap 60 langkah/s-sim
+  fpsSm += (1000 / Math.max(dt / turbo, 1) - fpsSm) * 0.05;
   acc += dt;
   let stepped = false;
   while (acc >= STEP && fi < 10_000_000) {

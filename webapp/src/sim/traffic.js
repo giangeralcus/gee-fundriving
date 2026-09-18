@@ -34,7 +34,7 @@ export class Traffic {
       x: ax + (bx - ax) * t,
       y: ay + (by - ay) * t,
       heading: (ang * 180) / Math.PI,
-      base: 2.2 + Math.random() * 1.1,
+      base: 6 + Math.random() * 4,   // m/s, skala 1:1
       speed: 0.0,
     };
   }
@@ -53,7 +53,7 @@ export class Traffic {
     return nc;
   }
 
-  update(signals, hero = null) {
+  update(signals, hero = null, dt = 1 / 60) {
     const w = this.world;
     // indeks leader per segmen terarah
     const onEdge = new Map();
@@ -70,12 +70,12 @@ export class Traffic {
         const hx = Math.cos((c.heading * Math.PI) / 180), hy = Math.sin((c.heading * Math.PI) / 180);
         const dxh = hero[0] - c.x, dyh = hero[1] - c.y;
         const fwdh = dxh * hx + dyh * hy;
-        if (0 < fwdh && fwdh < 32 && Math.abs(-dxh * hy + dyh * hx) < 6) tgt = 0.0;
+        if (0 < fwdh && fwdh < 26 && Math.abs(-dxh * hy + dyh * hx) < 3) tgt = 0.0;
       }
       for (const [tOther, j] of onEdge.get(`${c.a}:${c.b}`) ?? []) {
         if (j !== i && tOther > c.t) {
           const gap = (tOther - c.t) * c.L;
-          if (gap < 30) { tgt = 0.0; break; }
+          if (gap < 14) { tgt = 0.0; break; }
         }
       }
       // lampu merah di node tujuan
@@ -84,10 +84,10 @@ export class Traffic {
         const [ax, ay] = w.nodes.get(c.a);
         const [bx, by] = w.nodes.get(c.b);
         const axis = signals.axisOf(ax, ay, bx, by);
-        if (8 < distNode && distNode < 34 && !signals.green(c.b, axis)) tgt = 0.0;
+        if (6 < distNode && distNode < 30 && !signals.green(c.b, axis)) tgt = 0.0;
       }
       c.speed = tgt;
-      c.t += c.speed / c.L;
+      c.t += c.speed * dt / c.L;
       if (c.t >= 1.0) {
         const nc = this._nextEdge(c);
         c.a = nc.a; c.b = nc.b; c.t = 0.0; c.L = nc.L;

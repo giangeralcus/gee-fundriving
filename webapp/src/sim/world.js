@@ -50,6 +50,29 @@ export class World {
     return this.halfw.get(key2(a, b)) ?? 5.0;
   }
 
+  // lebar (halfwidth) segmen jalan terdekat dari posisi — dipakai lajur
+  // dinamis & ambang off-road. PENTING: segHalfw(a,b) butuh node id;
+  // rute mobil berisi koordinat, jadi lebar diambil dari segmen terdekat.
+  nearestSegW(x, y) {
+    const cx = Math.floor(x / CELL), cy = Math.floor(y / CELL);
+    let best = 1e9, bwd = 7.5;
+    for (let gx = cx - 1; gx <= cx + 1; gx++) {
+      for (let gy = cy - 1; gy <= cy + 1; gy++) {
+        const cell = this.segGrid.get(`${gx},${gy}`);
+        if (!cell) continue;
+        for (const i of cell) {
+          const s = this.segs[i];
+          const abx = s.bx - s.ax, aby = s.by - s.ay;
+          const tt = Math.max(0, Math.min(1, ((x - s.ax) * abx + (y - s.ay) * aby)
+            / (abx * abx + aby * aby + 1e-6)));
+          const d = Math.hypot(x - s.ax - abx * tt, y - s.ay - aby * tt);
+          if (d < best) { best = d; bwd = s.wd; }
+        }
+      }
+    }
+    return bwd;
+  }
+
   _buildSegments(data) {
     // segmen unik per pasangan node: {ax,ay,bx,by,wd,kind,a,b} — dipakai
     // render, dist-to-road, dan lampu lalu lintas
@@ -218,8 +241,43 @@ class MinHeap {
   }
 }
 
-export function largestComponent(world) {
-  let best = new Set();
+// Panjang kumulatif poliline (dipakai rute mobil, planner, dan profil kurva)
+export function routeArc(route) {
+  const cum = [0.0];
+  for (let i = 0; i < route.length - 1; i++) {
+    const [ax, ay] = route[i], [bx, by] = route[i + 1];
+    cum.push(cum[cum.length - 1] + Math.hypot(bx - ax, by - ay));
+  }
+  return cum;
+}
+
+// Profil kecepatan tikungan skala 1:1 (ala routeSpeedLimit jevpilot):
+// tajam (>55°) 3.5 m/s, sedang (>25°) 6.5 m/s — dilepas dengan jarak
+// pengereman comfort 3 m/s² sebelum tikungan.
+export function routeCaps(route, cum) {
+  const caps = [];
+  for (let k = 1; k < route.length - 1; k++) {
+    const a = route[k - 1], b = route[k], c = route[k + 1];
+    const d1x = b[0] - a[0], d1y = b[1] - a[1];
+    const d2x = c[0] - b[0], d2y = c[1] - b[1];
+    const ang = Math.abs(Math.atan2(d1x * d2y - d1y * d2x,
+      d1x * d2x + d1y * d2y) * 180 / Math.PI);
+    if (ang > 25) caps.push({ s: cum[k], vc: ang > 55 ? 3.5 : 6.5 });
+  }
+  return caps;
+}
+
+export function capAtV(caps, s) {
+  let v = Infinity;
+  for (const c of caps || []) {
+    const d = c.s - s;
+    if (d < -6) continue;   // udah lewat — lepas
+    v = Math.min(v, d > 0 ? Math.sqrt(c.vc * c.vc + 2 * 3 * Math.max(0, d - 3)) : c.vc);
+  }
+  return v;
+}
+
+export function largestComponent(world) {  let best = new Set();
   const seen = new Set();
   for (const n0 of world.adj.keys()) {
     if (seen.has(n0)) continue;

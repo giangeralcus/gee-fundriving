@@ -7,7 +7,7 @@ import { World, largestComponent, simplify } from "./world.js";
 import { Signals } from "./signals.js";
 import { Traffic } from "./traffic.js";
 import { Mission } from "./mission.js";
-import { MapCar } from "./car.js";
+import { MapCar, DT } from "./car.js";
 import { mapBrain } from "./brain.js";
 import { Planner } from "./planner.js";
 
@@ -26,7 +26,7 @@ export function ll2xy(meta, lat, lon) {
 
 export function createSim(data, opts = {}) {
   const brain = opts.brain || "v4";
-  const widthScale = opts.widthScale ?? 1.35;
+  const widthScale = opts.widthScale ?? 1.0;
   const world = new World(data, widthScale);
   const comp = largestComponent(world);
   let start;
@@ -92,14 +92,15 @@ export class Sim {
     const car = this.car, mission = this.mission, traffic = this.traffic;
     const signals = this.signals;
     const state = car.sense();
-    // safety-net: keluar jalur > 35m -> snap balik ke rute
-    if (state.lateral > 35 && !car.finished) {
+    // safety-net: keluar jalur > 12 m -> snap balik ke rute
+    if (state.lateral > 12 && !car.finished) {
       car.x = state.cx;
       car.y = state.cy;
       car.speed *= 0.4;
       mission.recovers += 1;
     }
-    // ACC: mobil AI SEARAH di koridor depan (lawan arah bukan rintangan)
+    // ACC: mobil AI SEARAH di koridor depan (lawan arah bukan rintangan) —
+    // skala 1:1: koridor lat 4.5 m (selebar lajur), jarak pandang 55 m
     const fx = Math.cos(rad(car.heading)), fy = Math.sin(rad(car.heading));
     let gap = null;
     for (const tc of traffic.cars) {
@@ -107,7 +108,7 @@ export class Sim {
       const fwd = dx * fx + dy * fy;
       if (0 < fwd && fwd < 55) {
         const lat = Math.abs(-dx * fy + dy * fx);
-        if (lat < 11 && (gap === null || fwd < gap)) {
+        if (lat < 4.5 && (gap === null || fwd < gap)) {
           const tcFwd = Math.cos(rad(tc.heading)) * fx + Math.sin(rad(tc.heading)) * fy;
           if (tcFwd > 0.25 || tc.speed < 0.1) gap = fwd;
         }
@@ -128,9 +129,9 @@ export class Sim {
     signals.pos.forEach(([lx, ly], j) => {
       const dx = lx - car.x, dy = ly - car.y;
       const fwd = dx * fx + dy * fy;
-      if (6 < fwd && fwd < 42) {
+      if (6 < fwd && fwd < 25) {
         const latt = Math.abs(-dx * fy + dy * fx);
-        if (latt < 13 && fwd < sdBest) { sdBest = fwd; siBest = j; }
+        if (latt < 6 && fwd < sdBest) { sdBest = fwd; siBest = j; }
       }
     });
     if (siBest >= 0) {
@@ -138,7 +139,7 @@ export class Sim {
       if (!signals.green(signals.nodeList[siBest], axis)) {
         thr = 0.0; brk = 1.0;
         // nyabrang merah: nempel lampu + masih merah + gerak
-        if (sdBest < 9 && car.speed > 1.0) {
+        if (sdBest < 4.5 && car.speed > 2) {
           const last = mission.redCd.get(siBest) ?? -9999;
           if (fi - last > 240) {
             mission.reds += 1;
@@ -148,7 +149,7 @@ export class Sim {
       }
     }
     car.step(steer, thr, brk);
-    mission.driven += car.speed;
+    mission.driven += car.speed * DT;
     // deadlock breaker tier 1: berhenti + rintangan nempel -> pindahkan
     if (car.speed < 0.15 && state.aheadGap !== null && state.aheadGap < 15) this.stallFrames++;
     else this.stallFrames = 0;
@@ -161,15 +162,15 @@ export class Sim {
       this._teleportNearest();
     }
     signals.update();
-    traffic.update(signals, [car.x, car.y]);
-    // tabrakan hero vs mobil AI
+    traffic.update(signals, [car.x, car.y], DT);
+    // tabrakan hero vs mobil AI (box bodi skala 1:1: lebar 1.9 m, panjang 4.6 m)
     if (this.crashCd > 0) this.crashCd--;
     else {
       for (const tc of traffic.cars) {
         const dx = tc.x - car.x, dy = tc.y - car.y;
         const fwd = dx * fx + dy * fy;
         const lat = Math.abs(-dx * fy + dy * fx);
-        if (lat < 4.5 && -6 < fwd && fwd < 9) {
+        if (lat < 2.4 && -3.5 < fwd && fwd < 4.5) {
           mission.crashes += 1;
           car.speed *= 0.3;
           this._teleportNearest();

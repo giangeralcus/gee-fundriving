@@ -6,6 +6,7 @@
 import * as THREE from "three";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { Signals } from "./sim/signals.js";
+import { DT } from "./sim/car.js";
 
 const COL = {
   sky: 0xa8cdf0,
@@ -178,17 +179,17 @@ export class Scene3D {
       const ux = dx / L, uy = dy / L;
       // pinggir kiri/kanan
       for (const side of [-1, 1]) {
-        const off = (s.wd - 0.6) * side;
+        const off = (s.wd - 0.4) * side;
         strip({ pos: edgePos, idx: edgeIdx }, null,
               s.ax - uy * off, s.ay + ux * off,
-              s.bx - uy * off, s.by + ux * off, 0.28);
+              s.bx - uy * off, s.by + ux * off, 0.12);
       }
       // tengah putus-putus
-      const period = 7.0, dash = 3.4;
+      const period = 6.0, dash = 3.0;
       for (let t = 1.0; t < L - dash; t += period) {
         const t2 = Math.min(t + dash, L - 1.0);
         strip({ pos: dashPos, idx: dashIdx }, null,
-              s.ax + ux * t, s.ay + uy * t, s.ax + ux * t2, s.ay + uy * t2, 0.24);
+              s.ax + ux * t, s.ay + uy * t, s.ax + ux * t2, s.ay + uy * t2, 0.15);
       }
     }
     this.scene.add(new THREE.Mesh(finishGeo(dashPos, dashIdx),
@@ -244,7 +245,7 @@ export class Scene3D {
 
   // ---- dinamis: mobil, rute, kandidat, lampu, goal --------------------------
   _buildDynamic() {
-    this.hero = this._mkCar(COL.heroBody, 34, 18, true);
+    this.hero = this._mkCar(COL.heroBody, 4.6, 1.85, true);
     this.heroGroup = this.hero;
     this.scene.add(this.hero);
     this.trafficMeshes = [];
@@ -266,33 +267,33 @@ export class Scene3D {
     this.scene.add(this.candLines);
     // goal misi: ring merah denyut
     this.goalRing = new THREE.Mesh(
-      new THREE.TorusGeometry(14, 1.6, 8, 40),
+      new THREE.TorusGeometry(4.5, 0.45, 8, 40),
       new THREE.MeshBasicMaterial({ color: COL.goal }));
     this.goalRing.rotation.x = -Math.PI / 2;
-    this.goalRing.position.y = 1;
+    this.goalRing.position.y = 0.3;
     this.scene.add(this.goalRing);
     this.signalViews = [];
   }
 
-  _mkCar(color, len = 34, wid = 18, hero = false) {
-    // low-poly: bodi + kabin kaca + 4 roda (depan bisa ngesteer) + lampu +
-    // blob shadow. Group dengan sumbu: maju = +X lokal.
+  _mkCar(color, len = 4.6, wid = 1.85, hero = false) {
+    // low-poly skala 1:1: bodi + kabin kaca + 4 roda (depan bisa ngesteer)
+    // + lampu + blob shadow. Group dgn sumbu: maju = +X lokal.
     const g = new THREE.Group();
-    const body = new THREE.Mesh(new THREE.BoxGeometry(len, 6.5, wid),
+    const body = new THREE.Mesh(new THREE.BoxGeometry(len, 0.72, wid),
       new THREE.MeshLambertMaterial({ color }));
-    body.position.y = 5.2;
+    body.position.y = 0.55;
     g.add(body);
-    const cabin = new THREE.Mesh(new THREE.BoxGeometry(len * 0.5, 5.5, wid * 0.82),
+    const cabin = new THREE.Mesh(new THREE.BoxGeometry(len * 0.48, 0.58, wid * 0.82),
       new THREE.MeshLambertMaterial({ color: COL.glass }));
-    cabin.position.set(-len * 0.06, 10.5, 0);
+    cabin.position.set(-len * 0.06, 1.12, 0);
     g.add(cabin);
     const wheels = [];
-    const tireGeo = new THREE.CylinderGeometry(3, 3, 2.6, 10);
+    const tireGeo = new THREE.CylinderGeometry(0.33, 0.33, 0.24, 10);
     tireGeo.rotateX(Math.PI / 2);   // sumbu roda = lebar mobil (z lokal)
     const tireMat = new THREE.MeshLambertMaterial({ color: COL.tire });
     for (const [fx, fz] of [[1, 1], [1, -1], [-1, 1], [-1, -1]]) {
       const pivot = new THREE.Group();
-      pivot.position.set(fx * len * 0.3, 3, fz * (wid / 2 - 0.4));
+      pivot.position.set(fx * len * 0.31, 0.33, fz * (wid / 2 - 0.02));
       const tire = new THREE.Mesh(tireGeo, tireMat);
       pivot.add(tire);
       g.add(pivot);
@@ -300,12 +301,12 @@ export class Scene3D {
     }
     const lampMat = new THREE.MeshBasicMaterial({ color: 0xfff6d8 });
     for (const s of [-1, 1]) {
-      const lamp = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.6, 3.2), lampMat);
-      lamp.position.set(len / 2, 5.2, s * wid * 0.3);
+      const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.16, 0.36), lampMat);
+      lamp.position.set(len / 2, 0.58, s * wid * 0.3);
       g.add(lamp);
-      const tail = new THREE.Mesh(new THREE.BoxGeometry(1, 1.4, 3),
+      const tail = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.14, 0.34),
         new THREE.MeshBasicMaterial({ color: hero ? 0xd23430 : 0x7a1f1c }));
-      tail.position.set(-len / 2, 5.4, s * wid * 0.3);
+      tail.position.set(-len / 2, 0.6, s * wid * 0.3);
       g.add(tail);
     }
     // blob shadow
@@ -313,8 +314,8 @@ export class Scene3D {
       new THREE.CircleGeometry(1, 20),
       new THREE.MeshBasicMaterial({ color: 0x101828, transparent: true, opacity: 0.22 }));
     blob.rotation.x = -Math.PI / 2;
-    blob.scale.set(len * 0.72, wid * 0.95, 1);
-    blob.position.y = 0.065;
+    blob.scale.set(len * 0.75, wid * 1.25, 1);
+    blob.position.y = 0.048;
     blob.renderOrder = 1;
     g.add(blob);
     g.userData = { wheels, spin: 0, len, wid };
@@ -329,7 +330,7 @@ export class Scene3D {
       if (w.front) w.pivot.rotation.y = -steer * 0.45;
       w.tire.rotation.z = -spin;
     }
-    group.userData.spin = spin + speed * 0.28;
+    group.userData.spin = spin + (speed * DT / 0.33) % (Math.PI * 2);
   }
 
   _ensureSignals() {
@@ -338,17 +339,17 @@ export class Scene3D {
     const boxMat = new THREE.MeshLambertMaterial({ color: 0x22262c });
     for (const [x, y] of this._sim.signals.pos) {
       const g = new THREE.Group();
-      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 1.1, 17, 6), poleMat);
-      pole.position.y = 8.5;
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 5.5, 6), poleMat);
+      pole.position.y = 2.75;
       g.add(pole);
-      const box = new THREE.Mesh(new THREE.BoxGeometry(3.4, 8, 2.4), boxMat);
-      box.position.set(4.5, 14, 0);
+      const box = new THREE.Mesh(new THREE.BoxGeometry(0.55, 1.4, 0.42), boxMat);
+      box.position.set(1.1, 4.75, 0);
       g.add(box);
       const mk = (hex) => new THREE.Mesh(
-        new THREE.SphereGeometry(1.15, 10, 8), new THREE.MeshBasicMaterial({ color: hex }));
+        new THREE.SphereGeometry(0.17, 10, 8), new THREE.MeshBasicMaterial({ color: hex }));
       const red = mk(0xe82127), green = mk(0x35c759);
-      red.position.set(4.5, 16.2, 1.3);
-      green.position.set(4.5, 11.8, 1.3);
+      red.position.set(1.1, 5.2, 0.24);
+      green.position.set(1.1, 4.35, 0.24);
       g.add(red, green);
       g.position.set(x, 0, y);
       // arah box biar keliatan dari jalan — rotasi ikut sumbu dominan
@@ -381,8 +382,8 @@ export class Scene3D {
       g.computeVertexNormals();
       return new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.92 }));
     };
-    this.routeGroup.add(ribbon(2.6, 0.075, COL.routeCase));
-    this.routeGroup.add(ribbon(1.4, 0.085, COL.route));
+    this.routeGroup.add(ribbon(0.55, 0.075, COL.routeCase));
+    this.routeGroup.add(ribbon(0.3, 0.085, COL.route));
   }
 
   // sinkron dunia 3D dgn state sim; dipanggil tiap frame
@@ -396,7 +397,7 @@ export class Scene3D {
     sim.traffic.cars.forEach((tc, i) => {
       if (!this.trafficMeshes[i]) {
         const color = PALETTE[i % PALETTE.length];
-        this.trafficMeshes[i] = this._mkCar(color, 24, 13);
+        this.trafficMeshes[i] = this._mkCar(color, 4.3, 1.8);
         this.scene.add(this.trafficMeshes[i]);
       }
       this._placeCar(this.trafficMeshes[i], tc.x, tc.y, tc.heading, 0, tc.speed);
@@ -409,8 +410,8 @@ export class Scene3D {
     for (const [ex, ey, ok, chosen] of dbg) {
       if (n >= 14) break;
       const o = n * 6;
-      pos.array[o] = car.x; pos.array[o + 1] = 1.6; pos.array[o + 2] = car.y;
-      pos.array[o + 3] = ex; pos.array[o + 4] = 1.6; pos.array[o + 5] = ey;
+      pos.array[o] = car.x; pos.array[o + 1] = 0.5; pos.array[o + 2] = car.y;
+      pos.array[o + 3] = ex; pos.array[o + 4] = 0.5; pos.array[o + 5] = ey;
       const c = chosen ? COL.chosen : ok ? COL.eligible : COL.offroad;
       const r = (c >> 16) / 255, g = ((c >> 8) & 255) / 255, b = (c & 255) / 255;
       col.array[o] = r; col.array[o + 1] = g; col.array[o + 2] = b;
@@ -420,10 +421,10 @@ export class Scene3D {
     this.candLines.geometry.setDrawRange(0, n * 2);
     pos.needsUpdate = col.needsUpdate = true;
     this.candLines.visible = this.candVisible;
-    // goal
+      // goal
     if (sim.mission.goal != null) {
       const [gx, gy] = this.world.nodes.get(sim.mission.goal);
-      this.goalRing.position.set(gx, 1, gy);
+      this.goalRing.position.set(gx, 0.3, gy);
       const t = performance.now() / 1000;
       const s = 1 + 0.15 * Math.sin(t * 4);
       this.goalRing.scale.set(s, 1, s);
@@ -442,30 +443,30 @@ export class Scene3D {
     const fwd = new THREE.Vector3(Math.cos(rad(car.heading)), 0, Math.sin(rad(car.heading)));
     let target, look;
     if (this.camMode === "Top") {
-      target = new THREE.Vector3(car.x, 340, car.y);
+      target = new THREE.Vector3(car.x, 70, car.y);
       look = new THREE.Vector3(car.x, 0, car.y);
     } else if (this.camMode === "Driver") {
-      target = new THREE.Vector3(car.x, 0, car.y).addScaledVector(fwd, 8);
-      target.y = 11;
-      look = new THREE.Vector3(car.x, 0, car.y).addScaledVector(fwd, 120);
-      look.y = 8;
+      target = new THREE.Vector3(car.x, 0, car.y).addScaledVector(fwd, 0.6);
+      target.y = 1.35;
+      look = new THREE.Vector3(car.x, 0, car.y).addScaledVector(fwd, 60);
+      look.y = 1.2;
       this.camPos.copy(target);
-      this.camera.position.copy(this.camera.position.lerp(target, 0.5));
+      this.camera.position.copy(target);
       this.camera.lookAt(look);
       return;
     } else {
-      target = new THREE.Vector3(car.x, 0, car.y).addScaledVector(fwd, -78);
-      target.y = 46;
-      look = new THREE.Vector3(car.x, 0, car.y).addScaledVector(fwd, 55);
-      look.y = 6;
+      target = new THREE.Vector3(car.x, 0, car.y).addScaledVector(fwd, -13);
+      target.y = 5.5;
+      look = new THREE.Vector3(car.x, 0, car.y).addScaledVector(fwd, 25);
+      look.y = 1.4;
     }
     if (this.camPos.lengthSq() === 0) this.camPos.copy(target);
     this.camPos.lerp(target, 0.09);
     this.camera.position.copy(this.camPos);
     if (this.shakeT > 0) {
       this.shakeT -= 1 / 60;
-      this.camera.position.x += (Math.random() - 0.5) * 6;
-      this.camera.position.y += (Math.random() - 0.5) * 4;
+      this.camera.position.x += (Math.random() - 0.5) * 1.4;
+      this.camera.position.y += (Math.random() - 0.5) * 0.9;
     }
     this.camera.lookAt(look);
   }
