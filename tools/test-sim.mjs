@@ -77,7 +77,7 @@ if (s.selesai !== true) fails.push("misi gak selesai");
 if (m.reds > 0) fails.push(`nyabrang merah ${m.reds}x`);
 for (const [i, e] of redEvents.entries())
   if (e.minD < 2.5) fails.push(`lampu #${i}: cuma berhenti ${e.minD.toFixed(1)} m sebelum garis`);
-if (!(med > 1.0 && med < 7)) fails.push(`lajur kanan gak stabil (median ${med.toFixed(2)} m)`);
+if (!(med > 0.8 && med < 3.2)) fails.push(`lajur kanan-dalam gak stabil (median ${med.toFixed(2)} m)`);
 if (p25 < 0.5) fails.push(`ada saat nyeret lajur kiri (p25 ${p25.toFixed(2)} m)`);
 if (maxV > 11.5) fails.push(`kecepatan lewat batas (${maxV.toFixed(1)} m/s)`);
 

@@ -36,10 +36,11 @@ export class MapCar {
 
   get maxv() { return MapCar.MAXV; }
 
-  // lajur kanan dinamis: makin lebar jalan, makin jauh nempel kanan
-  // (45% halfwidth dari garis tengah)
+  // lajur kanan-dalam dinamis: tiap arah kebagian 2 lajur (garis lajur di
+  // ±½ lebar arah), mobil di tengah lajur kanan yang dekat garis tengah
+  // (25% halfwidth dari garis tengah)
   get laneOff() {
-    return this.world.nearestSegW(this.x, this.y) * 0.45;
+    return this.world.nearestSegW(this.x, this.y) * 0.25;
   }
 
   lookahead() {

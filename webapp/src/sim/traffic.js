@@ -100,7 +100,7 @@ export class Traffic {
       const t = c.t;
       const px = ax + (bx - ax) * t, py = ay + (by - ay) * t;
       const L = c.L;
-      const off = w.segHalfw(c.a, c.b) * 0.55;
+      const off = w.segHalfw(c.a, c.b) * 0.25;   // lajur kanan-dalam (2 lajur per arah)
       const dx = bx - ax, dy = by - ay;
       c.x = px + (-dy / L) * off;
       c.y = py + (dx / L) * off;

@@ -162,8 +162,9 @@ export class Scene3D {
       m.position.set(nx, 0.052, ny);
       this.scene.add(m);
     }
-    // marka: garis tengah putus-putus + garis pinggir solid
+    // marka: garis tengah putus-putus + garis lajur kiri-kanan + pinggir
     const dashPos = [], edgePos = [], dashIdx = [], edgeIdx = [];
+    const lanePos = [], laneIdx = [];
     const strip = (arr, iri, x0, z0, x1, z1, wd) => {
       const dx = x1 - x0, dz = z1 - z0;
       const L = Math.hypot(dx, dz) + 1e-6;
@@ -184,15 +185,29 @@ export class Scene3D {
               s.ax - uy * off, s.ay + ux * off,
               s.bx - uy * off, s.by + ux * off, 0.12);
       }
-      // tengah putus-putus
+      // garis tengah putus-putus (pembatas dua arah)
       const period = 6.0, dash = 3.0;
       for (let t = 1.0; t < L - dash; t += period) {
         const t2 = Math.min(t + dash, L - 1.0);
         strip({ pos: dashPos, idx: dashIdx }, null,
               s.ax + ux * t, s.ay + uy * t, s.ax + ux * t2, s.ay + uy * t2, 0.15);
       }
+      // garis lajur kiri-kanan: pembatas 2 lajur per arah (jalan lebar saja)
+      if (s.wd >= 6.5) {
+        for (const side of [-1, 1]) {
+          const off = (s.wd / 2) * side;
+          for (let t = 2.0; t < L - dash; t += period) {
+            const t2 = Math.min(t + dash, L - 1.5);
+            strip({ pos: lanePos, idx: laneIdx }, null,
+                  s.ax - uy * off + ux * t, s.ay + ux * off + uy * t,
+                  s.ax - uy * off + ux * t2, s.ay + ux * off + uy * t2, 0.12);
+          }
+        }
+      }
     }
     this.scene.add(new THREE.Mesh(finishGeo(dashPos, dashIdx),
+      new THREE.MeshBasicMaterial({ color: COL.mark })));
+    this.scene.add(new THREE.Mesh(finishGeo(lanePos, laneIdx),
       new THREE.MeshBasicMaterial({ color: COL.mark })));
     this.scene.add(new THREE.Mesh(finishGeo(edgePos, edgeIdx),
       new THREE.MeshBasicMaterial({ color: COL.edge })));
@@ -371,7 +386,7 @@ export class Scene3D {
       const r = route[Math.max(i - 1, 0)];
       const dx = q[0] - r[0], dy = q[1] - r[1];
       const L = Math.hypot(dx, dy) + 1e-6;
-      const off = this.world.nearestSegW(p[0], p[1]) * 0.45;
+      const off = this.world.nearestSegW(p[0], p[1]) * 0.25;
       return [p[0] + (-dy / L) * off, p[1] + (dx / L) * off];
     });
     const ribbon = (width, y, color) => {
