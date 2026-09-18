@@ -364,10 +364,20 @@ export class Scene3D {
     this.routeFor = route;
     this.routeGroup.clear();
     if (route.length < 2) return;
+    // garis rute digeser ke LAJUR KANAN (ala lajur dinamis mobil) — biar
+    // kebaca jelas: garis biru = lajur kita, lajur kiri buat lawan arah
+    const pts = route.map((p, i) => {
+      const q = route[Math.min(i + 1, route.length - 1)];
+      const r = route[Math.max(i - 1, 0)];
+      const dx = q[0] - r[0], dy = q[1] - r[1];
+      const L = Math.hypot(dx, dy) + 1e-6;
+      const off = this.world.nearestSegW(p[0], p[1]) * 0.45;
+      return [p[0] + (-dy / L) * off, p[1] + (dx / L) * off];
+    });
     const ribbon = (width, y, color) => {
       const pos = [], idx = [];
-      for (let i = 0; i < route.length - 1; i++) {
-        const [ax, ay] = route[i], [bx, by] = route[i + 1];
+      for (let i = 0; i < pts.length - 1; i++) {
+        const [ax, ay] = pts[i], [bx, by] = pts[i + 1];
         const dx = bx - ax, dy = by - ay;
         const L = Math.hypot(dx, dy) + 1e-6;
         const px = (-dy / L) * width, py = (dx / L) * width;
