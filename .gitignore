@@ -14,3 +14,4 @@ maps/puri_*.json
 webapp/node_modules/
 webapp/dist/
 webapp/public/
+webapp/.vite/
