@@ -880,6 +880,24 @@ def remote_decide(request):
         return None
 
 
+def _load_jev_planner():
+    """Brain Jev live sebagai planner (drive-car interface). Gagal -> None (rule)."""
+    try:
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "tools", "jev_brain.py")
+        spec = importlib.util.spec_from_file_location("jev_brain", path)
+        jb = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(jb)
+        pl = jb.JevBrain(fallback=map_brain, every=45)
+        print(f"brain: jev ({'LIVE' if pl.live else 'OFFLINE-' + str(pl.err)})",
+              file=sys.stderr)
+        return pl if pl.live else None
+    except Exception as e:
+        print(f"brain: jev gagal dimuat ({e}), pakai rule", file=sys.stderr)
+        return None
+
+
 class Planner:
     """Brain v4 map mode: candidate sampling + scorer lokal, eksekusi
     maneuver antar keputusan (planner milih, pure pursuit nunjukin jalan)."""
@@ -1378,7 +1396,12 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
     total_len = sum(math.hypot(s[2] - s[0], s[3] - s[1]) for s in world.segs)
     n_ai = max(6, min(16, int(total_len / 700)))
     traffic = Traffic(world, comp, (sx, sy), n=n_ai)
-    planner = Planner(world, signals, traffic) if brain == "v4" else None
+    if brain == "v4":
+        planner = Planner(world, signals, traffic)
+    elif brain == "jev":
+        planner = _load_jev_planner()
+    else:
+        planner = None
     mission = Mission(world, comp, start)
     first_ok = False
     if goal_coord:
