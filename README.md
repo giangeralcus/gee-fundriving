@@ -6,7 +6,7 @@ Simulasi nyetir 2D top-down: **1 mobil autonomous** keliling sirkuit dengan *Sys
 
 ![gameplay](docs/demo.png)
 
-## Versi web (baru! — Loop City di browser)
+## Versi web ringan (2D Canvas — port jalur desktop)
 
 ```bash
 # cara 1: buka langsung (offline, tanpa server)
@@ -21,6 +21,31 @@ Port JavaScript + Canvas dari versi desktop: fisika 60Hz fixed-step, render
 pure pursuit + ACC + lampu merah, traffic AI, mode misi, dan kendali manual
 (WASD/arrow + `F` ambil-alih). Peta Loop City di-embed (`map_loop_city.js`).
 Tes: `node web/test_headless.js` (logika: mobil jalan, misi selesai).
+
+## Versi web 3D (ala JevPilot) — jalan di browser
+
+Port setia ke **Vite + Three.js** dengan UI ala [JevPilot](https://jevpilot.standardagents.ai):
+tema terang glassmorphism, navigation card (belokan berikutnya + sisa jarak),
+minimap ber-route, driver dock (speed + LIMIT + tombol otopilot), inspector
+JSON live 4 Hz (payload planner + respons), dialog sampai-tujuan & game-over,
+touch thumbstick, loading screen, dan dunia siang bermarka. Planner jalan di
+web worker. Live: **https://gee-fundriving.pages.dev**
+
+Default mode **satu kendaraan** (challenge penyempurnaan mobil hero: lane
+keeping, tikungan, lampu merah). Mau mobil AI balik? `?traffic=1`.
+
+```bash
+cd webapp
+npm install
+npm run dev        # http://localhost:5173
+npm run build      # dist/ — deploy: npx wrangler pages deploy dist
+```
+
+Keys: `[J]` otopilot on/off, `[WASD/panah/space]` manual, `[C]` kamera
+Chase/Driver/Top, `[P]` pause, `[R]` misi baru, `{ }` inspector JSON.
+Param URL: `?brain=v3` (brain lama), `?jev=https://...` (hook LLM eksternal),
+`?traffic=1`, `?map=/file.json`.
+Smoke test headless (Node, tanpa browser): `node tools/benchmark.mjs --brain v4`.
 
 ## Loop City (default, peta internal — instan & gampang diadaptasi)
 
@@ -55,7 +80,10 @@ python fundriving.py --map loop --headless --seconds 60
 ```
 
 Fitur map mode:
-- **Self-driving v3**: pure pursuit (target selalu di atas rute), progresi proyeksi segmen, raut rute Douglas-Peucker (bunuh zigzag dual-carriageway), antisipasi tikungan (rem curvature, slow-in fast-out), ACC proporsional searah (lawan arah bukan rintangan), anti-stall, safety-net snap kalau keluar > 35m
+- **Self-driving v4 (default)**: candidate sampling ala [JevPilot](https://github.com/standardagents/jevpilot) — 13 kandidat maneuver (4 target speed × 3 offset lajur + rem) di-rollout 1,5 detik tiap 4 Hz pakai fisika yang sama dgn mobil, di-tag (off-road, kontak AI + timing, nyebrang merah), difilter ala moving set, lalu diskor lokal. Maneuver menang dieksekusi antar keputusan via pure pursuit. Endpoint kandidat + maneuver terpilih kelihatan langsung di peta
+- **Hook brain eksternal**: set `JEV_API_URL` (POST payload tabel kandidat ringkas, balas `{"choice": "v3"}`) biar model luar yang milih; gagal/time-out otomatis balik ke scorer lokal. HUD nampilin sumber keputusan (`[jev]` / `[lokal]`)
+- **Fallback `--brain v3`**: pure pursuit (target selalu di atas rute), progresi proyeksi segmen, raut rute Douglas-Peucker (bunuh zigzag dual-carriageway), antisipasi tikungan (rem curvature, slow-in fast-out), ACC proporsional searah (lawan arah bukan rintangan), anti-stall, safety-net snap kalau keluar > 35m
+- **Anti-deadlock dua tier**: breaker lama (gap < 15m, 4 detik) + tier baru (diam total 8 detik apa pun gapnya — standoff lawan arah)
 - **Lajur kanan**: mobil jalan di lajur kanan (bukan tengah jalan), AI deteksi mobil lu sebagai rintangan
 - **Dunia berlapis**: jalan per-tipe dengan casing, poligon bangunan, area hijau/air — chunk cache per-tile 500m (60fps di peta 9x9 km)
 - **Koordinat bisa diatur**: `--route poi-a poi-b` (dari maps/poi.json), atau `--start "lat,lon"` + `--goal "lat,lon"` + `--heading derajat`
@@ -66,7 +94,9 @@ Fitur map mode:
 - **Bisa dikendarai sendiri**: tekan `F` untuk lepas dari assistant dan kemudikan mobil pakai `WASD`/arrow (`W`/`↑` gas, `S`/`↓` rem, `A`/`D` belok — kemudi di-smooth biar gak jerk). Tekan `F` lagi buat balik ke autopilot. Mulai langsung dari kemudi: `--manual`. Di mode manual kamu yang nyabrang lampu merah (denda tetap masuk) dan nggak ada snap balik ke rute
 - **Kamera follow** + zoom `[-][=]`, `R` misi baru, `F` assistant ON/OFF, `ESC` keluar, FPS live di HUD; render 30fps (fisika tetap 60Hz), rekaman MP4 headless 30fps real-time
 
-Benchmark learning curve: `python tools/benchmark.py` (dua arah Green Sedayu ↔ Puri Indah di peta OSM, atau misi acak di Loop City) — hasil tercatat di `docs/benchmark/history.jsonl`.
+Benchmark learning curve: `python tools/benchmark.py` (dua arah Green Sedayu ↔ Puri Indah di peta OSM, atau misi acak di Loop City; pilih brain dengan `--brain v4|v3`) — hasil tercatat di `docs/benchmark/history.jsonl`.
+
+Terakhir (2026-09-18, peta OSM dua arah): v4 selesai dua-duanya, skor 1003 & 962, 0 tabrak — setara v3 (1005 & 962) dengan offroad lebih bersih di arah pertama (2.1% vs 4.0%).
 
 Tambah peta daerah lain: ubah koordinat bbox di `tools/fetch_osm.py` atau pakai `--bbox`.
 
@@ -114,8 +144,13 @@ docs/demo.png    # screenshot gameplay
 
 - [ ] Mode sedang: mobil + motor, obstacle acak, traffic
 - [ ] Multi-agent + leaderboard
-- [ ] Hook Jev API asli (early access TypeSafe) sebagai brain
+- [x] Hook brain eksternal: `JEV_API_URL` / `?jev=` (payload tabel kandidat ala JevPilot) — tinggal arahkan ke Jev API asli kalau udah terbuka
+- [x] Port web 3D ala JevPilot: Vite + Three.js, worker planner, deploy Cloudflare Pages
 - [ ] Brain generational (evolution) buat belajar hindar
+
+## Referensi
+
+- [JevPilot](https://github.com/standardagents/jevpilot) ([demo online](https://jevpilot.standardagents.ai)) — demo Tesla FSD ala Jev yang open source; arsitektur candidate sampling + pemilihan model jadi dasar brain v4, dan port web 3D kami ngikutin gaya demo-nya
 
 ---
 Dibuat di D4 oleh bakasang untuk Gee 🏁
