@@ -328,7 +328,10 @@ export class Planner {
       if (!(4 < fwd && fwd < 90) || Math.abs(-dx * fy + dy * fx) > 13) return;
       const axis = Math.abs(fx) >= Math.abs(fy) ? 0 : 1;
       if (!this.signals.green(this.signals.nodeList[j], axis)) {
-        const rem = CYCLE - (this.signals.frame % CYCLE);
+        // sisa fase merah via API signals (fixed: eksak dari siklus —
+        // semantik lama; adaptive: estimasi state machine actuated)
+        const rem = this.signals.redRem(this.signals.nodeList[j], axis)
+          ?? Math.max(CYCLE - (this.signals.frame % CYCLE), 30);
         if (!best || fwd < best[0]) best = [fwd, rem];
       }
     });

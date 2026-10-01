@@ -16,6 +16,7 @@ const get = (f, d) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] :
 const brain = get("--brain", "v4");
 const seconds = Number(get("--seconds", "300"));
 const traffic = get("--traffic", "0") === "1" ? undefined : 0;
+const signalsMode = get("--signals", "fixed");
 const mapArg = get("--map", "loop");
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -23,7 +24,7 @@ const mapFile = mapArg === "loop" || mapArg === "circle"
   ? path.join(root, "maps", mapArg === "circle" ? "circle.json" : "loop_city.json")
   : path.resolve(mapArg);
 const data = JSON.parse(fs.readFileSync(mapFile, "utf8"));
-const sim = createSim(data, { brain, traffic });
+const sim = createSim(data, { brain, traffic, signalsMode });
 
 const rad = (d) => (d * Math.PI) / 180;
 const redEvents = [];      // {minD, waited, passed}
@@ -85,7 +86,7 @@ if (!(med > 0.8 && med < 3.2)) fails.push(`lajur kanan-dalam gak stabil (median 
 if (p25 < 0.5) fails.push(`ada saat nyeret lajur kiri (p25 ${p25.toFixed(2)} m)`);
 if (maxV > 11.5) fails.push(`kecepatan lewat batas (${maxV.toFixed(1)} m/s)`);
 
-console.log(`=== test-sim brain=${brain} traffic=${traffic === 0 ? "off" : "on"} ===`);
+console.log(`=== test-sim brain=${brain} traffic=${traffic === 0 ? "off" : "on"} signals=${signalsMode} ===`);
 console.log(`misi selesai : ${s.selesai ? "YA" : "TIDAK"} (${sim.mission.n}x, skor ${m.score})`);
 console.log(`tempuh       : ${s.tempuh_m} m dalam ${s.detik_sim} dtk (avg ${(s.tempuh_m / Math.max(s.detik_sim, 1) * 3.6).toFixed(0)} km/j, puncak ${(maxV * 3.6).toFixed(0)} km/j)`);
 console.log(`lampu merah  : ${redEvents.length} pendekatan, dilanggar ${m.reds}x, stop terdekat ${redEvents.length ? Math.min(...redEvents.map((e) => e.minD)).toFixed(1) : "-"} m`);

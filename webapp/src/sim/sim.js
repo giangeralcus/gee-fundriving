@@ -51,7 +51,7 @@ export function createSim(data, opts = {}) {
   const route0 = world.route(start, goal);
   if (route0.length < 2) throw new Error("rute gak ketemu");
   const car = new MapCar(world, start, simplify(route0.map((n) => world.nodes.get(n)), simplifyEps), speedScale, opts.vehicle ?? VEHICLES.citycar);
-  const signals = new Signals(world, comp);
+  const signals = new Signals(world, comp, opts.signalsMode);
   const signs = new RoadSigns(world, comp, signals);
   const parked = new Parked(world, comp);
   let totalLen = 0;
@@ -173,11 +173,17 @@ export class Sim {
     car.gear = (mission.parking && mission.maneuver) ? (mission.maneuver.gear ?? 1) : 1;
     // berhenti di lampu merah: lampu terdekat di koridor depan
     let siBest = -1, sdBest = 1e9;
+    const heroCalls = [];   // detector hero utk sinyal adaptive (actuated)
     signals.pos.forEach(([lx, ly], j) => {
       const dx = lx - car.x, dy = ly - car.y;
       const fwd = dx * fx + dy * fy;
+      const latt = Math.abs(-dx * fy + dy * fx);
+      // call: hero di zona deteksi (≤ Signals.ADAPT.ZONE) → demand simpang
+      if (2 < fwd && fwd < Signals.ADAPT.ZONE && latt < 13 && !car.finished)
+        heroCalls.push({ node: signals.nodeList[j],
+          axis: Math.abs(fx) >= Math.abs(fy) ? 0 : 1,
+          moving: car.speed >= 0.5 });
       if (6 < fwd && fwd < 25) {
-        const latt = Math.abs(-dx * fy + dy * fx);
         if (latt < 6 && fwd < sdBest) { sdBest = fwd; siBest = j; }
       }
     });
@@ -231,7 +237,7 @@ export class Sim {
       this.hardStall = 0;
       this._teleportNearest();
     }
-    signals.update();
+    signals.update(traffic, heroCalls);
     traffic.update(signals, [car.x, car.y], DT, this.signs?.stopNodeSet ?? null);
     // tabrakan hero vs mobil AI — box bodi skala 1:1, ikut ukuran kendaraan
     if (this.crashCd > 0) this.crashCd--;

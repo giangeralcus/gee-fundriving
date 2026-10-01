@@ -405,7 +405,7 @@ export class Scene3D {
       const [ax, ay] = [Math.abs(x - this._sim.car.x), Math.abs(y - this._sim.car.y)];
       g.rotation.y = ax > ay ? 0 : Math.PI / 2;
       this.scene.add(g);
-      this.signalViews.push({ red, green });
+      this.signalViews.push({ red, green, ph: 0 });
     }
   }
 
@@ -653,9 +653,18 @@ export class Scene3D {
       const s = 1 + 0.15 * Math.sin(t * 4);
       this.goalRing.scale.set(s, 1, s);
     }
-    // lampu: fase dari signals.frame — dua lampu housing, nyala bergantian
-    const phase = Math.floor(sim.signals.frame / Signals.CYCLE) % 2;
-    this.signalViews.forEach((v) => {
+    // lampu: fase per simpang. fixed: fase global dari frame (lama). adaptive:
+    // tanya green() per node — saat kuning/allred (dua-duanya false) tahan
+    // fase terakhir, jadi transisinya gak salto.
+    const fixedPhase = Math.floor(sim.signals.frame / Signals.CYCLE) % 2;
+    this.signalViews.forEach((v, i) => {
+      let phase;
+      if (sim.signals.mode === "adaptive") {
+        const n = sim.signals.nodeList[i];
+        if (sim.signals.green(n, 0)) v.ph = 0;
+        else if (sim.signals.green(n, 1)) v.ph = 1;
+        phase = v.ph;
+      } else phase = fixedPhase;
       v.red.material.color.setHex(phase === 0 ? 0x5a1414 : 0xe82127);
       v.green.material.color.setHex(phase === 0 ? 0x35c759 : 0x14501f);
     });

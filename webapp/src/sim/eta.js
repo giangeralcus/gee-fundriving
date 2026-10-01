@@ -83,7 +83,9 @@ export function estimateEta({ car, mission, signs, signals, frame }) {
   };
 
   // 2. lampu merah di depan sepanjang rute
-  if (signals) {
+  // (hanya mode fixed — math fase eksak butuh siklus tetap; adaptive
+  // gak bisa diprediksi tanpa simulasi, jadi tungganya diabaikan dulu)
+  if (signals && signals.mode !== "adaptive") {
     signals.pos.forEach(([lx, ly]) => {
       const p = projectOnRoute(route, cum, lx, ly);
       if (p.dist > 8 || p.s < sNow + 3 || p.s > sEnd - 5) return;
