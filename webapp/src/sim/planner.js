@@ -92,6 +92,12 @@ export async function remoteDecide(request) {
 export async function decideCore(ctx, snap) {
   const { route, cum, segs, segGrid } = ctx;
   const { x, y, heading, speed, maxv, laneOff, lookahead, offRoadM = OFF_ROAD_M } = snap;
+  const wb = snap.wheelbase ?? 2.7;             // wheelbase kendaraan (m)
+  const steerMax = snap.steerMax ?? 0.5236;     // rad (30° default citycar)
+  const accV4 = snap.acc ?? MapCar.ACC;
+  const brakeV4 = snap.brake ?? BRAKE_V4;   // rem ikut kendaraan (bus lebih lemot)
+  const halfF = (snap.len ?? 4.6) / 2, halfW = (snap.wid ?? 1.85) / 2;
+  let gDelta = snap.delta ?? 0;                 // sudut roda depan awal (rad)
   const s0 = snap.s0;
   // rollout satu kandidat
   const rollout = (off, sf) => {
@@ -100,27 +106,35 @@ export async function decideCore(ctx, snap) {
     let trav = 0.0, offroad = 0, checked = 0, predTau = null, crossedRed = false;
     for (let i = 0; i < ROLLOUT_STEPS; i++) {
       let tgtEff = tgtV;
-      // cap profil tikungan (ala routeSpeedLimit) + rem menuju lead/garis
+      // cap profil tikungan (ala routeSpeedLimit) + zona rambu + rem menuju lead/garis
       tgtEff = Math.min(tgtEff, capAtV(snap.caps, s0 + trav));
+      if (snap.zoneCap != null) tgtEff = Math.min(tgtEff, snap.zoneCap);
       if (snap.gap != null) {
         const room = snap.gap - trav - STOP_BUF;
-        tgtEff = Math.min(tgtEff, room > 0 ? Math.sqrt(2 * BRAKE_V4 * room) : 0.0);
+        tgtEff = Math.min(tgtEff, room > 0 ? Math.sqrt(2 * brakeV4 * room) : 0.0);
       }
       if (snap.red) {
         const room = snap.red[0] - trav - 2.0;
-        tgtEff = Math.min(tgtEff, room > 0 ? Math.sqrt(2 * BRAKE_V4 * room) : 0.0);
+        tgtEff = Math.min(tgtEff, room > 0 ? Math.sqrt(2 * brakeV4 * room) : 0.0);
       }
       // pure pursuit ke titik lookahead di rute + offset lajur
       const [px, py, tang] = routePointAt(route, cum, s0 + trav + lookahead);
       const tx = px - Math.sin(rad(tang)) * (laneOff + off);
       const ty = py + Math.cos(rad(tang)) * (laneOff + off);
-      const desired = deg(Math.atan2(ty - gy, tx - gx));
-      const he = wrapErr(desired - ghd);
-      const steer = Math.max(-1, Math.min(1, he / 40.0));
-      const yaw = steer * MapCar.YAW_MAX * (0.45 + 0.55 * v / maxv);
-      ghd = wrapDeg(ghd + yaw * DT);
-      if (v > tgtEff + 0.1) v = Math.max(0.0, v - BRAKE_V4 * DT);
-      else if (v < tgtEff - 0.1) v = Math.min(maxv, v + MapCar.ACC * DT);
+      // pure pursuit curvature (Coulter): target di frame mobil → κ = 2y/Ld²
+      // → delta = atan(κ·WB), di-rate-limit — CERMIN car.step biar rollout
+      // jujur terhadap model gerak beneran.
+      const dxp = tx - gx, dyp = ty - gy;
+      const ca0 = Math.cos(rad(ghd)), sa0 = Math.sin(rad(ghd));
+      const yLocal = -dxp * sa0 + dyp * ca0;
+      const Ld = Math.hypot(dxp, dyp) + 1e-6;
+      const steerT = Math.max(-1, Math.min(1, Math.atan((2 * yLocal / (Ld * Ld)) * wb) / steerMax));
+      const dD = Math.max(-1.7 * DT, Math.min(1.7 * DT, steerT * steerMax - gDelta));
+      gDelta += dD;
+      const yawRate = (v / wb) * Math.tan(gDelta);
+      ghd = wrapDeg(ghd + deg(yawRate) * DT);
+      if (v > tgtEff + 0.1) v = Math.max(0.0, v - brakeV4 * DT);
+      else if (v < tgtEff - 0.1) v = Math.min(maxv, v + accV4 * DT);
       const a = rad(ghd);
       gx += Math.cos(a) * v * DT;
       gy += Math.sin(a) * v * DT;
@@ -135,7 +149,7 @@ export async function decideCore(ctx, snap) {
         for (const p of snap.preds) {
           const dxo = p[0] + p[2] * tau - gx, dyo = p[1] + p[3] * tau - gy;
           const f = dxo * ca + dyo * sa, l = -dxo * sa + dyo * ca;
-          if (-3.0 < f && f < 4.5 && Math.abs(l) < 2.4) { predTau = tau; break; }
+          if (-(halfF + 0.7) < f && f < halfF + 2.2 && Math.abs(l) < halfW + 1.45) { predTau = tau; break; }
         }
       }
       if (snap.red && snap.red[1] - i > 0 && trav > snap.red[0] && v > 1.5)
@@ -316,6 +330,9 @@ export class Planner {
       x: car.x, y: car.y, heading: car.heading, speed: car.speed,
       maxv: car.maxv, laneOff: car.laneOff,
       lookahead: car.lookahead(),
+      wheelbase: car.wheelbase, steerMax: car.steerMax, delta: car.delta,
+      acc: car.ACC, brake: car.BRAKE, len: car.len, wid: car.wid,
+      zoneCap: state.speedCap ?? null,
       // ambang off-road ikut lebar jalan (halfw + setengah lebar mobil + margin)
       offRoadM: this.world.nearestSegW(car.x, car.y) + 2.2,
       caps: car.caps,
@@ -358,11 +375,13 @@ export class Planner {
     const [px, py, tang] = routePointAt(this.route, this.cum, this.s + car.lookahead());
     const gx = px - Math.sin(rad(tang)) * (car.laneOff + off);
     const gy = py + Math.cos(rad(tang)) * (car.laneOff + off);
-    const desired = deg(Math.atan2(gy - car.y, gx - car.x));
-    const he = wrapErr(desired - car.heading);
-    const steer = Math.max(-1, Math.min(1, he / 40.0));
-    // speed: target maneuver, di-cap profil tikungan (mirror rollout)
-    let tgtV = Math.min(sf * car.maxv, car.capAt(this.s + 0.5 * car.lookahead()));
+    const he = wrapErr(deg(Math.atan2(gy - car.y, gx - car.x)) - car.heading);
+    // steering: pure pursuit curvature (κ = 2y/Ld², delta = atan(κ·WB)) —
+    // konsisten dgn model sepeda di car.step, halus & ikut skala kendaraan
+    const steer = car.purePursuitSteer(gx, gy);
+    // speed: target maneuver, di-cap profil tikungan + zona rambu (mirror rollout)
+    let tgtV = Math.min(sf * car.maxv, car.capAt(this.s + 0.5 * car.lookahead()),
+      state.speedCap ?? Infinity);
     const gap = state.aheadGap;
     let acc = "", thr, brk;
     if (gap != null && gap < 10) { thr = 0.0; brk = 1.0; acc = "REM!"; }

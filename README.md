@@ -25,11 +25,19 @@ Tes: `node web/test_headless.js` (logika: mobil jalan, misi selesai).
 ## Versi web 3D (ala JevPilot) — jalan di browser
 
 Port setia ke **Vite + Three.js** dengan UI ala [JevPilot](https://jevpilot.standardagents.ai):
-tema terang glassmorphism, navigation card (belokan berikutnya + sisa jarak),
-minimap ber-route, driver dock (speed + LIMIT + tombol otopilot), inspector
-JSON live 4 Hz (payload planner + respons), dialog sampai-tujuan & game-over,
-touch thumbstick, loading screen, dan dunia siang bermarka. Planner jalan di
-web worker. Live: **https://gee-fundriving.pages.dev**
+tema terang glassmorphism, **main menu (Mulai / Settings / Tentang)**, settings
+tersimpan di `localStorage` (mode otopilot/manual, kecepatan basis 0.5–1.5×,
+**tipe kendaraan city car / bus**, peta, otak v4/v3, lalu lintas), **waypoint
+ala "add stop"** (klik minimap = rute lewat situ, shift+klik hapus terakhir,
+🚩✕ bersihkan), **rambu jalan** (STOP deterministik + zona batas kecepatan 25
+km/j — autopilot nurut, HUD LIMIT ikut berubah; langgar STOP = penalti),
+navigation card (belokan berikutnya + sisa jarak), minimap ber-route, driver
+dock (speed + LIMIT + tombol otopilot), inspector JSON live 4 Hz (payload
+planner + respons), dialog sampai-tujuan & game-over, touch thumbstick,
+loading screen, dan dunia siang bermarka. Gerakan mobil pakai **model sepeda
+kinematik** (yaw = v·tan(delta)/wheelbase, sudut roda di-rate-limit) — belokan
+halus dan otomatis ikut skala kendaraan (bus radius putarnya lebar). Planner
+jalan di web worker. Live: **https://gee-fundriving.pages.dev**
 
 Default mode **satu kendaraan** (challenge penyempurnaan mobil hero: lane
 keeping, tikungan, lampu merah). Mau mobil AI balik? `?traffic=1`.
@@ -42,7 +50,7 @@ npm run build      # dist/ — deploy: npx wrangler pages deploy dist
 ```
 
 Keys: `[J]` otopilot on/off, `[WASD/panah/space]` manual, `[C]` kamera
-Chase/Driver/Top, `[P]` pause, `[R]` misi baru, `{ }` inspector JSON.
+Chase/Driver/Top, `[P]`/`[ESC]` pause, `[R]` misi baru, `{ }` inspector JSON.
 Param URL: `?brain=v3` (brain lama), `?jev=https://...` (hook LLM eksternal),
 `?traffic=1`, `?map=/file.json`.
 Smoke test headless (Node, tanpa browser): `node tools/benchmark.mjs --brain v4`.

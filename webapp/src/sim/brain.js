@@ -6,14 +6,16 @@ const MAXV = 11.1;
 export function mapBrain(state) {
   const he = state.headingErr;
   const gap = state.aheadGap;
-  const v = (state.speedNorm ?? 0) * MAXV;
-  // target speed: cap tikungan + kehati-hatian saat arah masih melebar
-  let tgt = Math.min(MAXV, state.capV ?? MAXV);
+  const vmax = state.maxv ?? MAXV;          // ikut skala kendaraan (bus lebih pelan)
+  const v = (state.speedNorm ?? 0) * vmax;
+  // target speed: cap tikungan + zona rambu + kehati-hatian saat arah masih melebar
+  let tgt = Math.min(vmax, state.speedCap ?? state.capV ?? vmax);
   const sharp = Math.abs(he);
   if (sharp > 60) tgt = Math.min(tgt, 2.5);
   else if (sharp > 30) tgt = Math.min(tgt, 4.5);
   else if (sharp > 15) tgt = Math.min(tgt, 8);
-  const steer = Math.max(-1.0, Math.min(1.0, he / 40.0));
+  // steer: pure pursuit curvature (konsisten model sepeda); fallback he/40
+  const steer = state.ppSteer ?? Math.max(-1.0, Math.min(1.0, he / 40.0));
   let thr = 0, brk = 0;
   if (v > tgt + 0.6) brk = 1;
   else if (v < tgt - 0.4) thr = 1;

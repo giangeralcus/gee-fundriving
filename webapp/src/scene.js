@@ -47,8 +47,9 @@ function paint(geo, hex) {
 }
 
 export class Scene3D {
-  constructor(container, world) {
+  constructor(container, world, heroSpec = null, signs = null) {
     this.world = world;
+    this.heroSpec = heroSpec;
     this.renderer = new THREE.WebGLRenderer({
       canvas: container.querySelector("canvas"), antialias: true });
     this.renderer.setSize(container.clientWidth, container.clientHeight);
@@ -69,6 +70,7 @@ export class Scene3D {
     this.candVisible = true;
     this._buildStatic();
     this._buildDynamic();
+    if (signs) this._buildSigns(signs);
     window.addEventListener("resize", () => {
       this.renderer.setSize(container.clientWidth, container.clientHeight);
       this.camera.aspect = container.clientWidth / container.clientHeight;
@@ -260,7 +262,8 @@ export class Scene3D {
 
   // ---- dinamis: mobil, rute, kandidat, lampu, goal --------------------------
   _buildDynamic() {
-    this.hero = this._mkCar(COL.heroBody, 4.6, 1.85, true);
+    const hs = this.heroSpec;
+    this.hero = this._mkCar(hs?.color || COL.heroBody, hs?.len ?? 4.6, hs?.wid ?? 1.85, true);
     this.heroGroup = this.hero;
     this.scene.add(this.hero);
     this.trafficMeshes = [];
@@ -412,6 +415,63 @@ export class Scene3D {
   }
 
   // sinkron dunia 3D dgn state sim; dipanggil tiap frame
+  // rambu jalan: STOP (oktagon merah) + batas kecepatan (lingkaran putih
+  // ring merah + angka). Dipasang di kanan pendekat, di luar tepi aspal.
+  _buildSigns(signs) {
+    const g = new THREE.Group();
+    const poleGeo = new THREE.CylinderGeometry(0.06, 0.07, 2.3, 8);
+    const poleMat = new THREE.MeshLambertMaterial({ color: 0x9aa0a8 });
+    for (const it of signs.items) {
+      let sx = it.x, sy = it.y;
+      if (it.type === "stop") {
+        // offset ke kanan pendekat, keluar tepi jalan (arah hadap = datang)
+        const rx = Math.sin(it.ang), ry = -Math.cos(it.ang);
+        sx += rx * 6.2; sy += ry * 6.2;
+      }
+      const s = new THREE.Group();
+      s.position.set(sx, 0, sy);
+      s.rotation.y = -it.ang + Math.PI;   // muka rambu ke arah pendekat
+      const pole = new THREE.Mesh(poleGeo, poleMat);
+      pole.position.y = 1.15;
+      s.add(pole);
+      if (it.type === "stop") {
+        const back = new THREE.Mesh(new THREE.CircleGeometry(0.48, 8),
+          new THREE.MeshBasicMaterial({ color: 0xf2f3f5, side: THREE.DoubleSide }));
+        back.position.y = 2.1;
+        const face = new THREE.Mesh(new THREE.CircleGeometry(0.4, 8),
+          new THREE.MeshBasicMaterial({ color: 0xd23430, side: THREE.DoubleSide }));
+        face.position.set(0, 2.1, 0.012);
+        s.add(back, face);
+      } else {
+        const face = new THREE.Mesh(new THREE.CircleGeometry(0.42, 24),
+          new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide }));
+        face.position.y = 2.1;
+        const ring = new THREE.Mesh(new THREE.RingGeometry(0.3, 0.42, 24),
+          new THREE.MeshBasicMaterial({ color: 0xd23430, side: THREE.DoubleSide }));
+        ring.position.set(0, 2.1, 0.012);
+        const num = this._signNumber(it.limit);
+        num.position.set(0, 2.1, 0.02);
+        s.add(face, ring, num);
+      }
+      g.add(s);
+    }
+    this.scene.add(g);
+  }
+
+  _signNumber(kmh) {
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = 64;
+    const c = cv.getContext("2d");
+    c.fillStyle = "#111";
+    c.font = "bold 30px Arial";
+    c.textAlign = "center"; c.textBaseline = "middle";
+    c.fillText(String(kmh), 32, 34);
+    const tex = new THREE.CanvasTexture(cv);
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.4),
+      new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
+    return m;
+  }
+
   update(sim, steerView = 0) {
     this._sim = sim;
     this._ensureSignals();

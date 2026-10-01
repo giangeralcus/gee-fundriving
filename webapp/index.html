@@ -15,6 +15,10 @@
       --accent: #e82127;
     }
     * { box-sizing: border-box; }
+    /* guard: atribut hidden HARUS menang atas display apapun dari rule lain
+       (bug lama: #paused-overlay display:grid menimpa [hidden] -> overlay
+       selalu tampil & menahan semua klik) */
+    [hidden] { display: none !important; }
     body { margin: 0; overflow: hidden; background: #e5e7eb; }
     button {
       font: inherit; color: inherit; border: 0; background: none;
@@ -86,6 +90,7 @@
     }
     .speed-limit small { font-size: 8px; letter-spacing: 0.08em; color: #d23430; font-weight: 700; }
     .speed-limit b { font-size: 17px; font-family: Manrope, sans-serif; }
+    .speed-limit.zone { border-color: #e8912a; background: #fff7e8; }
     .dock-divider { width: 1px; align-self: stretch; background: var(--line); }
     .pilot-actions { display: flex; gap: 8px; }
     .pilot-button.primary-on { background: #3e6ae11a; color: var(--blue); }
@@ -125,6 +130,52 @@
     .crash-stats span { color: var(--muted); }
     .dialog-actions { display: flex; gap: 10px; }
     .dialog-actions .secondary { border: 1px solid var(--line); font-weight: 600; }
+
+    /* ---- main menu ---- */
+    #main-menu {
+      position: fixed; inset: 0; z-index: 40; display: grid; place-items: center;
+      background: linear-gradient(180deg, #e5e7ebd9, #e5e7eb9e);
+      backdrop-filter: blur(7px); transition: opacity 0.35s;
+    }
+    #main-menu.gone { opacity: 0; pointer-events: none; }
+    .menu-card {
+      text-align: center; padding: 34px 44px 26px; animation: rise 0.45s ease-out;
+      min-width: min(420px, 92vw);
+    }
+    @keyframes rise { from { opacity: 0; transform: translateY(16px) scale(0.985); } }
+    .menu-card h1 {
+      font-family: Manrope, sans-serif; font-size: 30px; margin: 6px 0 2px;
+      display: flex; align-items: center; justify-content: center; gap: 12px;
+    }
+    .menu-card h1 .mark {
+      width: 40px; height: 40px; border-radius: 11px; background: var(--blue);
+      color: #fff; display: grid; place-items: center; font-size: 22px; font-weight: 700;
+      box-shadow: 0 6px 18px #3e6ae14d;
+    }
+    .menu-sub { color: var(--muted); margin: 0 0 20px; }
+    .menu-actions { display: grid; gap: 8px; }
+    .menu-actions button {
+      justify-content: center; padding: 12px; font-weight: 600; font-size: 14px;
+      border: 1px solid var(--line); border-radius: 10px; background: #fff;
+      transition: transform 0.12s, box-shadow 0.12s, background 0.12s;
+    }
+    .menu-actions button:hover { background: #f5f6f8; transform: translateY(-1px); box-shadow: 0 4px 14px #10182817; }
+    .menu-actions .primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+    .menu-actions .primary:hover { background: #3458c4; }
+    .menu-hints { display: flex; justify-content: center; gap: 14px; margin-top: 18px; color: var(--muted); font-size: 11px; }
+
+    /* ---- settings ---- */
+    .setting-rows { display: grid; gap: 4px; margin: 14px 0 8px; }
+    .setting-row {
+      display: flex; align-items: center; justify-content: space-between; gap: 18px;
+      padding: 9px 2px; border-bottom: 1px solid var(--line);
+    }
+    .setting-row:last-child { border-bottom: 0; }
+    .setting-label small { color: var(--muted); font-weight: 400; margin-left: 6px; font-size: 10px; }
+    .seg { display: flex; gap: 3px; background: #171a200a; border-radius: 9px; padding: 3px; }
+    .seg button { padding: 7px 12px; border-radius: 7px; color: var(--muted); font-weight: 600; }
+    .seg button.active { background: #fff; color: var(--blue); box-shadow: 0 1px 5px #10182821; }
+    .setting-note { color: var(--muted); font-size: 11.5px; margin: 4px 0 14px; }
 
     /* ---- json inspector ---- */
     #json-dialog { width: min(720px, 92vw); }
@@ -212,6 +263,7 @@
       <div class="minimap-toolbar">
         <span style="color:var(--muted);font-size:11px;align-self:center;">PETA RUTE</span>
         <div class="zoomer">
+          <button id="via-clear" title="Hapus semua waypoint">🚩✕</button>
           <button id="map-zoom-out" title="Perkecil">−</button>
           <button id="map-zoom-in" title="Perbesar">+</button>
           <button id="map-reset" title="Reset peta">⟲</button>
@@ -243,12 +295,18 @@
         <button id="fullscreen" title="Layar penuh">⛶</button>
         <span class="divider"></span>
         <button id="pause" title="Pause · P">⏸</button>
+        <button id="dock-settings" title="Settings">⚙</button>
       </div>
     </div>
   </div>
 
   <div id="paused-overlay" hidden>
-    <div class="glass"><span>⏸ Pause</span><button id="resume" class="primary">Lanjut nyetir</button></div>
+    <div class="glass">
+      <span>⏸ Pause</span>
+      <button id="resume" class="primary">Lanjut nyetir</button>
+      <button id="pause-settings" title="Settings">⚙ Settings</button>
+      <button id="pause-menu" title="Balik ke menu utama">☰ Menu</button>
+    </div>
   </div>
 
   <div id="arrival" class="arrival glass" hidden>
@@ -287,6 +345,61 @@
     <p id="json-description">Payload persis yang ditawarkan ke planner (dan ke JEV_API_URL kalau diset): tabel kandidat ringkas + pertanyaan pilihan.</p>
     <pre id="json-content"></pre>
   </dialog>
+
+  <dialog id="settings-dialog">
+    <span class="eyebrow">PENGATURAN</span>
+    <h1>Settings</h1>
+    <div class="setting-rows">
+      <div class="setting-row"><span class="setting-label">Mode <small>langsung</small></span>
+        <div class="seg" id="set-mode"><button data-v="otopilot">Otopilot</button><button data-v="manual">Manual</button></div>
+      </div>
+      <div class="setting-row"><span class="setting-label">Kecepatan <small>langsung</small></span>
+        <div class="seg" id="set-speed"><button data-v="0.5">0.5×</button><button data-v="0.75">0.75×</button><button data-v="1">1×</button><button data-v="1.25">1.25×</button><button data-v="1.5">1.5×</button></div>
+      </div>
+      <div class="setting-row"><span class="setting-label">Kendaraan <small>muat ulang</small></span>
+        <div class="seg" id="set-vehicle"><button data-v="citycar">City Car</button><button data-v="bus">Bus</button></div>
+      </div>
+      <div class="setting-row"><span class="setting-label">Peta <small>muat ulang</small></span>
+        <div class="seg" id="set-map"><button data-v="loop">Loop City</button><button data-v="circle">Sirkuit</button></div>
+      </div>
+      <div class="setting-row"><span class="setting-label">Otak <small>muat ulang</small></span>
+        <div class="seg" id="set-brain"><button data-v="v4">v4 · planner</button><button data-v="v3">v3 · rule</button></div>
+      </div>
+      <div class="setting-row"><span class="setting-label">Lalu lintas <small>muat ulang</small></span>
+        <div class="seg" id="set-traffic"><button data-v="off">Mati</button><button data-v="on">Hidup</button></div>
+      </div>
+    </div>
+    <p class="setting-note">Setelan tersimpan otomatis di browser ini. Peta, otak & lalu lintas diterapkan saat dunia dimuat ulang.</p>
+    <div class="dialog-actions"><button id="close-settings" class="primary">Selesai</button></div>
+  </dialog>
+
+  <dialog id="about-dialog">
+    <span class="eyebrow">TENTANG</span>
+    <h1>Gee-FunDriving</h1>
+    <p><b>Side hobby.</b> Simulasi buat ngarahin perkembangan <i>AI driving basics</i> aja — dasar-dasar nyetir otonom: nempel lajur, jaga jarak, patuh lampu merah &amp; rambu (STOP, batas kecepatan), sampai planner milih jalur sendiri. Fokus belajarnya: <b>integrasi navigasi ala Google Maps/Waze</b> — set tujuan &amp; waypoint — ke <b>kendaraan berbasis mobil</b>, dari city car sampai bus. Dibangun pelan-pelan, tiap iterasi diukur (benchmark + test) biar yang dasar beneran kuat dulu.</p>
+    <p>Bukan produk, bukan riset formal — tempat bereksperimen otak nyetir (System-One decision loop, terinspirasi demo "rebuilt Tesla FSD with Jev" — TypeSafe AI). Peta Loop City & Sirkuit Lingkar bikinan sendiri; peta OSM nyata data © OpenStreetMap contributors.</p>
+    <div class="dialog-actions">
+      <a href="https://giangeralcus.com" target="_blank" rel="noopener noreferrer"><button class="secondary">🌐 giangeralcus.com</button></a>
+      <a href="https://github.com/giangeralcus/gee-fundriving" target="_blank" rel="noopener noreferrer"><button class="secondary">GitHub ⭐</button></a>
+      <button id="close-about" class="primary">Tutup</button>
+    </div>
+  </dialog>
+
+  <div id="main-menu" hidden>
+    <div class="menu-card">
+      <span class="eyebrow">SIMULATOR NYETIR 3D</span>
+      <h1><span class="mark">G</span> Gee-FunDriving</h1>
+      <p class="menu-sub">Otopilot Gee · city car & bus · waypoint & rambu</p>
+      <div class="menu-actions">
+        <button id="menu-start" class="primary">▶&nbsp; Mulai nyetir</button>
+        <button id="menu-settings">⚙ Settings</button>
+        <button id="menu-about">ℹ Tentang</button>
+      </div>
+      <div class="menu-hints">
+        <span><kbd>J</kbd> otopilot</span><span><kbd>C</kbd> kamera</span><span><kbd>P</kbd> pause</span><span><kbd>T</kbd> turbo</span>
+      </div>
+    </div>
+  </div>
 
   <button id="help-fab" class="glass" title="Bantuan">?</button>
   <dialog id="help-dialog">

@@ -10,6 +10,8 @@ import { Mission } from "./mission.js";
 import { MapCar, DT } from "./car.js";
 import { mapBrain } from "./brain.js";
 import { Planner } from "./planner.js";
+import { RoadSigns } from "./roadsigns.js";
+import { VEHICLES } from "./vehicles.js";
 
 export const FPS = 60;
 
@@ -27,6 +29,7 @@ export function ll2xy(meta, lat, lon) {
 export function createSim(data, opts = {}) {
   const brain = opts.brain || "v4";
   const widthScale = opts.widthScale ?? 1.0;
+  const speedScale = opts.speedScale ?? 1.0;
   // eps raut rute bisa diatur per peta (lingkaran butuh eps kecil biar mulus)
   const simplifyEps = data.meta.simplifyEps ?? 12.0;
   const world = new World(data, widthScale);
@@ -46,8 +49,9 @@ export function createSim(data, opts = {}) {
   });
   const route0 = world.route(start, goal);
   if (route0.length < 2) throw new Error("rute gak ketemu");
-  const car = new MapCar(world, start, simplify(route0.map((n) => world.nodes.get(n)), simplifyEps));
+  const car = new MapCar(world, start, simplify(route0.map((n) => world.nodes.get(n)), simplifyEps), speedScale, opts.vehicle ?? VEHICLES.citycar);
   const signals = new Signals(world, comp);
+  const signs = new RoadSigns(world, comp, signals);
   let totalLen = 0;
   for (const s of world.segs)
     totalLen += Math.hypot(s.bx - s.ax, s.by - s.ay);
@@ -65,13 +69,13 @@ export function createSim(data, opts = {}) {
   if (!firstOk) mission.new(start, car);
   const worker = opts.makeWorker ? opts.makeWorker() : null;
   const planner = brain === "v4" ? new Planner(world, signals, traffic, worker) : null;
-  return new Sim(world, comp, car, signals, traffic, mission, planner);
+  return new Sim(world, comp, car, signals, traffic, mission, planner, signs);
 }
 
 const dist2 = (p, q) => (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2;
 
 export class Sim {
-  constructor(world, comp, car, signals, traffic, mission, planner) {
+  constructor(world, comp, car, signals, traffic, mission, planner, signs = null) {
     this.world = world;
     this.comp = comp;
     this.car = car;
@@ -79,6 +83,7 @@ export class Sim {
     this.traffic = traffic;
     this.mission = mission;
     this.planner = planner;
+    this.signs = signs;
     this.offFrames = 0;
     this.frames = 0;
     this.crashCd = 0;
@@ -94,6 +99,9 @@ export class Sim {
     const car = this.car, mission = this.mission, traffic = this.traffic;
     const signals = this.signals;
     const state = car.sense();
+    // zona batas kecepatan (rambu): cap buat autopilot + info HUD LIMIT
+    state.speedCap = this.signs ? this.signs.speedLimitAt(car.x, car.y) : null;
+    state.limitKmh = Math.round((state.speedCap ?? car.MAXV) * 3.6);
     // safety-net: keluar jalur > 12 m -> snap balik ke rute
     if (state.lateral > 12 && !car.finished) {
       car.x = state.cx;
@@ -152,6 +160,26 @@ export class Sim {
     }
     car.step(steer, thr, brk);
     mission.driven += car.speed * DT;
+    // rambu STOP: wajib berhenti sebelum garis (kecepatan < 0.35 m/s sebentar).
+    // Autopilot otomatis nurut (rem dipaksa dekat rambu); lewat tanpa
+    // berhenti = penalti stopRuns (manual pun sama aturannya).
+    if (this.signs) {
+      const sa = this.signs.stopAhead(car.x, car.y, Math.atan2(fy, fx));
+      if (sa) {
+        const [spDist, spI] = sa;
+        if (car.speed > 0.3 && spDist < 9 && spDist > 1.2) { thr = 0.0; brk = 1.0; }
+        const lastOk = mission.stopOk.get(spI) ?? -99999;
+        if (spDist < 6.5 && car.speed < 0.35 && fi - lastOk > 45) {
+          mission.stopOk.set(spI, fi);   // catat: berhenti layak di rambu ini
+        }
+        const lastRun = mission.stopRunCd.get(spI) ?? -99999;
+        if (spDist <= 1.5 && car.speed > 2 && fi - lastOk > 240 && fi - lastRun > 240) {
+          mission.stopRuns += 1;
+          mission.stopRunCd.set(spI, fi);
+          this.events.push("kena rambu STOP tanpa berhenti");
+        }
+      }
+    }
     // deadlock breaker tier 1: berhenti + rintangan nempel -> pindahkan
     if (car.speed < 0.15 && state.aheadGap !== null && state.aheadGap < 15) this.stallFrames++;
     else this.stallFrames = 0;
@@ -164,15 +192,16 @@ export class Sim {
       this._teleportNearest();
     }
     signals.update();
-    traffic.update(signals, [car.x, car.y], DT);
-    // tabrakan hero vs mobil AI (box bodi skala 1:1: lebar 1.9 m, panjang 4.6 m)
+    traffic.update(signals, [car.x, car.y], DT, this.signs?.stopNodeSet ?? null);
+    // tabrakan hero vs mobil AI — box bodi skala 1:1, ikut ukuran kendaraan
     if (this.crashCd > 0) this.crashCd--;
     else {
+      const halfF = car.len / 2, halfW = car.wid / 2;
       for (const tc of traffic.cars) {
         const dx = tc.x - car.x, dy = tc.y - car.y;
         const fwd = dx * fx + dy * fy;
         const lat = Math.abs(-dx * fy + dy * fx);
-        if (lat < 2.4 && -3.5 < fwd && fwd < 4.5) {
+        if (lat < halfW + 1.45 && -(halfF + 1.2) < fwd && fwd < halfF + 2.2) {
           mission.crashes += 1;
           car.speed *= 0.3;
           this._teleportNearest();

@@ -21,6 +21,8 @@ export class Mission {
     this.reds = 0;
     this.crashes = 0;
     this.recovers = 0;
+    this.stopRuns = 0;   // nabrak rambu STOP tanpa berhenti
+    this.via = null;     // daftar node waypoint (rute lewat sini)
     this.redCd = new Map();
     this.goal = null;
     this.routeLen = 0.0;
@@ -37,6 +39,7 @@ export class Mission {
   }
 
   new(fromNode, car) {
+    this.via = null;   // misi acak = tanpa waypoint
     const w = this.world;
     const [fx, fy] = w.nodes.get(fromNode);
     const pool = shuffled([...this.comp].sort((a, b) => a - b)).slice(0, Math.min(500, this.comp.size));
@@ -61,7 +64,29 @@ export class Mission {
     const r = this.world.route(fromNode, goalNode);
     if (r.length < 2) return false;
     const pts = simplify(r.map((n) => this.world.nodes.get(n)), this.world.meta.simplifyEps ?? 12.0);
+    this.via = null;
     this._set(goalNode, pts, car);
+    return true;
+  }
+
+  // Rute lewat waypoint (ala "add stop" di Google Maps): from -> via1 ->
+  // ... -> viaN (waypoint terakhir = tujuan). Tiap kaki diroute sendiri
+  // lalu disambung — titik sambungan tetap persis di node waypoint.
+  newVia(fromNode, viaNodes, car) {
+    if (!viaNodes || !viaNodes.length) return false;
+    const eps = this.world.meta.simplifyEps ?? 12.0;
+    const seq = [fromNode, ...viaNodes];
+    const pts = [];
+    for (let i = 0; i < seq.length - 1; i++) {
+      const leg = this.world.route(seq[i], seq[i + 1]);
+      if (leg.length < 2) return false;
+      const s = simplify(leg.map((n) => this.world.nodes.get(n)), eps);
+      if (s.length < 2) return false;
+      if (pts.length === 0) pts.push(...s);
+      else pts.push(...s.slice(1));
+    }
+    this.via = [...viaNodes];
+    this._set(viaNodes[viaNodes.length - 1], pts, car);
     return true;
   }
 
@@ -72,8 +97,11 @@ export class Mission {
     this.reds = 0;
     this.crashes = 0;
     this.recovers = 0;
+    this.stopRuns = 0;
     this.done = false;
     this.redCd = new Map();
+    this.stopOk = new Map();
+    this.stopRunCd = new Map();
     car.route = pts;
     car.wpI = 0;
     car.finished = false;
@@ -82,10 +110,11 @@ export class Mission {
 
   complete(car) {
     const base = Math.round(this.routeLen / Math.max(this.driven, 1.0) * 1000);
-    const pts = Math.max(50, base - 40 * this.reds - 25 * this.crashes);
+    const pts = Math.max(50, base - 40 * this.reds - 25 * this.crashes - 15 * this.stopRuns);
     this.score += pts;
     this.n += 1;
     this.done = true;
+    this.via = null;
     return pts;
   }
 }

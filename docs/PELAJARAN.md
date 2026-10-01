@@ -191,3 +191,30 @@ browser) lebih sering jadi penyebab daripada algoritmanya.
 - **Pelajaran**: "recursive learning" itu literally ini — setiap iterasi
   dipagari test dari iterasi sebelumnya (paritas lampu/mobil yang dulu
   catatan kaki, sekarang pagar).
+
+## 19. Ganti model gerak: rollout WAJIB cermin fisika beneran
+
+- **Kejadian** (2026-10-01): migrasi yaw "rate kap" (`steer*YAW_MAX*(...)`)
+  ke **model sepeda kinematik** (`yaw = v/L·tan(delta)`, sudut roda depan
+  di-rate-limit) + steering pure pursuit curvature (`κ = 2y/Ld²`,
+  `delta = atan(κ·WB)` — Coulter 1992, PythonRobotics). Brain v3 sempat
+  **gak selesai + kena tabrak** padahal v4 bersih: brain rule masih pakai
+  `he/40` yang kalibrasinya gak cocok sama geometri baru (understeer).
+- **Pelajaran**: kalau ada DUA pemakai model gerak (sim + rollout planner +
+  brain rule), ganti fisika = ganti SEMUA, bukan cuma `car.step`. Formula
+  steer error-normalized (`he/40`) itu terkalibrasi ke model lama — ganti
+  model gerak wajib ganti ke steering berbasis curvature yang turun dari
+  geometri kendaraan (wheelbase, steerMax). Paritas test A/B nangkep sisanya.
+
+## 20. Fitur dunia (rambu/kendaraan) lahir dari data deterministik
+
+- **Kejadian**: rambu STOP & zona kecepatan dibangkitkan dari `hash01(nodeId)`
+  — bukan `Math.random()` — biar peta sama = rambu sama: bisa dites, bisa
+  direproduksi, gak berubah tiap reload. Loop City (semua simpang berlampu)
+  hasilnya 0 STOP → fallback: kalau gak ada simpang yang kwalifikasi, sebagian
+  kecil node belokan dobel dapat STOP.
+- **Pelajaran**: konten dunia yang memengaruhi perilaku (rambu = penalti)
+  harus deterministik & dites; fitur yang bisa "gak muncul" di peta tertentu
+  butuh fallback biar tetap terlihat. Mobil AI juga harus hormat rambu yang
+  sama (crawl masuk simpang STOP) — kalau cuma hero yang nurut, hero berhenti
+  jadi sasaran serudukan AI di belakang.

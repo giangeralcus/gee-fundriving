@@ -1,5 +1,10 @@
 // Mobil hero di peta — skala 1:1 ala jevpilot: meter beneran, kecepatan
-// m/s, akselerasi & rem m/s², yaw dibatasi radius putar minimal.
+// m/s, akselerasi & rem m/s². Gerak pakai MODEL SEPEDA KINEMATIK (kinematic
+// bicycle): yaw_rate = v / wheelbase * tan(delta) — delta = sudut kemudi
+// roda depan (rad), di-rate-limit biar belokan halus, dan otomatis ikut
+// skala kendaraan (bus wheelbase panjang → radius putar lebar, realistis).
+// Referensi: PythonRobotics pure_pursuit (delta = atan2(2·WB·sinα/Lf, 1),
+// clip MAX_STEER), Coulter 1992 (κ = 2y/Ld²).
 // Satu tick = DT detik. PURE PURSUIT: progres rute dari proyeksi posisi
 // ke segmen aktif, steering menuju titik lookahead DI ATAS rute (geser
 // kanan buat lajur kanan, dinamis ikut lebar jalan).
@@ -7,9 +12,11 @@
 export const DT = 1 / 60;
 
 import { routeArc, routeCaps, capAtV } from "./world.js";
+import { VEHICLES } from "./vehicles.js";
 
 const wrapDeg = (d) => ((d % 360) + 360) % 360;
 const wrapErr = (d) => wrapDeg(d + 180) - 180;
+const DEG = Math.PI / 180;
 
 export class MapCar {
   static MAXV = 11.1;        // m/s (40 km/j)
@@ -20,21 +27,53 @@ export class MapCar {
   static LOOKAHEAD_GAIN = 1.15; // × v (m/s)
   static CAPTURE = 4;        // radius capture waypoint (m)
 
-  constructor(world, startNode, route) {
+  constructor(world, startNode, route, speedScale = 1.0, vehicle = VEHICLES.citycar) {
     this.world = world;
     this.route = route;
     this.wpI = 0;
+    // spesifikasi kendaraan: instance menimpa konstanta kelas (kontrak
+    // fisika MapCar.MAXV/ACC tetap utuh buat pembanding); kecepatan basis
+    // (speed_scale) menggeser MAXV & ACC BARENG biar feel akselerasi
+    // proporsional.
+    this.spec = vehicle;
+    this.len = vehicle.len;
+    this.wid = vehicle.wid;
+    this.wheelbase = vehicle.wheelbase;
+    this.steerMax = vehicle.steerMax * DEG;   // sudut roda depan maks (rad)
+    this.MAXV = vehicle.maxv * speedScale;
+    this.ACC = vehicle.acc * speedScale;
+    this.BRAKE = vehicle.brake;
+    this.delta = 0.0;    // sudut kemudi roda depan saat ini (rad)
+    this.speed = 0.0;    // m/s
     const [x, y] = world.nodes.get(startNode);
     this.x = x; this.y = y;
     this.heading = 0.0;
-    this.speed = 0.0;        // m/s
     this.crashes = 0;
     this.aliveTime = 0;
     this.finished = false;
     this.initHeading();
   }
 
-  get maxv() { return MapCar.MAXV; }
+  get maxv() { return this.MAXV; }
+
+  setSpeedScale(s) {
+    this.MAXV = this.spec.maxv * s;
+    this.ACC = this.spec.acc * s;
+  }
+
+  // Pure pursuit berbasis curvature (Coulter 1992): titik target diproyek-
+  // sikan ke frame mobil → κ = 2·y_lokal / Ld²; sudut roda depan =
+  // atan(κ·wheelbase) (bentuk lain dari delta = atan2(2·WB·sinα/Lf, 1) di
+  // PythonRobotics). Balikin steer ternormalisasi [-1, 1] vs steerMax.
+  purePursuitSteer(tx, ty) {
+    const h = this.heading * DEG;
+    const dx = tx - this.x, dy = ty - this.y;
+    const Ld = Math.hypot(dx, dy) + 1e-6;
+    const yLocal = -dx * Math.sin(h) + dy * Math.cos(h);
+    const kappa = (2.0 * yLocal) / (Ld * Ld);
+    const delta = Math.atan(kappa * this.wheelbase);
+    return Math.max(-1, Math.min(1, delta / this.steerMax));
+  }
 
   // lajur kanan-dalam dinamis: tiap arah kebagian 2 lajur (garis lajur di
   // ±½ lebar arah), mobil di tengah lajur kanan yang dekat garis tengah
@@ -44,7 +83,9 @@ export class MapCar {
   }
 
   lookahead() {
-    return MapCar.LOOKAHEAD_BASE + MapCar.LOOKAHEAD_GAIN * this.speed;
+    // makin panjang kendaraan, makin jauh pandang ke depan (kinematic bicycle:
+    // Ld = base + gain·v + 0.4·wheelbase)
+    return MapCar.LOOKAHEAD_BASE + MapCar.LOOKAHEAD_GAIN * this.speed + 0.4 * this.wheelbase;
   }
 
   initHeading() {
@@ -146,19 +187,30 @@ export class MapCar {
     return {
       lateral: p.dist, halfw: hw,
       headingErr,
-      speedNorm: this.speed / MapCar.MAXV,
+      maxv: this.MAXV,
+      speedNorm: this.speed / this.MAXV,
       wp: tgt, cx: p.cx, cy: p.cy,
       curv,
       // batas kecepatan tikungan dilihat 2.2 detik ke depan (buat brain v3)
-      capV: Math.min(MapCar.MAXV, this.capAt(this.arcPos() + this.speed * 2.2)),
+      capV: Math.min(this.MAXV, this.capAt(this.arcPos() + this.speed * 2.2)),
+      // steer pure pursuit (curvature) buat brain rule v3 — konsisten model sepeda
+      ppSteer: this.purePursuitSteer(look[0], look[1]),
     };
   }
 
   step(steer, thr, brk) {
-    const yaw = steer * MapCar.YAW_MAX * (0.45 + 0.55 * this.speed / MapCar.MAXV);
-    this.heading = wrapDeg(this.heading + yaw * DT);
-    if (brk > 0) this.speed = Math.max(0.0, this.speed - MapCar.BRAKE * DT);
-    else if (thr > 0) this.speed = Math.min(MapCar.MAXV, this.speed + MapCar.ACC * thr * DT);
+    // MODEL SEPEDA KINEMATIK: sudut roda depan dikejar ke target dengan
+    // rate-limit (halus, gak snap), yaw lahir dari geometri kendaraan:
+    // yaw_rate = v / L * tan(delta). Saat diam → yaw 0 (fisik beneran).
+    const STEER_RATE = 1.7;   // rad/s maks perubahan sudut roda depan (~97°/s)
+    const deltaTarget = Math.max(-1, Math.min(1, steer)) * this.steerMax;
+    const dDelta = Math.max(-STEER_RATE * DT,
+      Math.min(STEER_RATE * DT, deltaTarget - this.delta));
+    this.delta += dDelta;
+    const yawRate = (this.speed / this.wheelbase) * Math.tan(this.delta);
+    this.heading = wrapDeg(this.heading + (yawRate / DEG) * DT);
+    if (brk > 0) this.speed = Math.max(0.0, this.speed - this.BRAKE * brk * DT);
+    else if (thr > 0) this.speed = Math.min(this.MAXV, this.speed + this.ACC * thr * DT);
     const a = (this.heading * Math.PI) / 180;
     this.x += Math.cos(a) * this.speed * DT;
     this.y += Math.sin(a) * this.speed * DT;

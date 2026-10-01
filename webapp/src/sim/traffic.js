@@ -53,7 +53,7 @@ export class Traffic {
     return nc;
   }
 
-  update(signals, hero = null, dt = 1 / 60) {
+  update(signals, hero = null, dt = 1 / 60, stopNodes = null) {
     const w = this.world;
     // indeks leader per segmen terarah
     const onEdge = new Map();
@@ -85,6 +85,12 @@ export class Traffic {
         const [bx, by] = w.nodes.get(c.b);
         const axis = signals.axisOf(ax, ay, bx, by);
         if (6 < distNode && distNode < 30 && !signals.green(c.b, axis)) tgt = 0.0;
+      }
+      // rambu STOP di node tujuan: AI melambat masuk (crawl), biar gak
+      // nyeruduk hero yang lagi berhenti nurut rambu
+      if (stopNodes?.has(c.b)) {
+        const distNode = (1.0 - c.t) * c.L;
+        if (distNode < 14) tgt = Math.min(tgt, Math.max(1.2, distNode * 0.35));
       }
       c.speed = tgt;
       c.t += c.speed * dt / c.L;

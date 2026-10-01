@@ -44,6 +44,9 @@ export class UI {
     $("map-zoom-in").onclick = () => { this.mapZoom = Math.min(4, this.mapZoom * 1.3); };
     $("map-zoom-out").onclick = () => { this.mapZoom = Math.max(0.5, this.mapZoom / 1.3); };
     $("map-reset").onclick = () => { this.mapZoom = 1; };
+    // waypoint: klik = tambah lewat sini, shift+klik = hapus terakhir
+    $("map-canvas").addEventListener("click", (ev) => this._mapClick(ev));
+    $("via-clear").onclick = () => this.h.clearVia();
     $("new-world").onclick = () => this.h.newMission();
     $("next-trip").onclick = () => { $("arrival").hidden = true; };
     $("retry-drive").onclick = () => { $("crash-dialog").close(); this.h.restart(); };
@@ -63,7 +66,18 @@ export class UI {
           x.classList.toggle("active", x === b));
       };
     });
-    // touch: thumbstick + rem
+    // menu utama, settings & tentang
+    $("menu-start").onclick = () => this.h.start();
+    $("menu-settings").onclick = () => $("settings-dialog").showModal();
+    $("menu-about").onclick = () => $("about-dialog").showModal();
+    $("close-about").onclick = () => $("about-dialog").close();
+    $("close-settings").onclick = () => $("settings-dialog").close();
+    $("pause-settings").onclick = () => $("settings-dialog").showModal();
+    $("pause-menu").onclick = () => this.h.openMenu();
+    $("dock-settings").onclick = () => $("settings-dialog").showModal();
+    this.syncSettings();
+
+  // touch: thumbstick + rem
     this.touch = { active: false, steer: 0, thr: 0, brk: 0 };
     const stick = $("stick"), knob = $("knob");
     const onStick = (ev) => {
@@ -91,6 +105,59 @@ export class UI {
     brake.addEventListener("pointerdown", () => { this.touch.brk = 1; });
     brake.addEventListener("pointerup", () => { this.touch.brk = 0; });
     if ("ontouchstart" in window) $("touch-controls").hidden = false;
+  }
+
+  // klik di minimap → waypoint (node jalan terdekat dari titik klik).
+  // shift+klik = hapus waypoint terakhir. Route di-reroute lewat situ.
+  _mapClick(ev) {
+    const mv = this._mv;
+    if (!mv) return;
+    const cv = $("map-canvas");
+    const r = cv.getBoundingClientRect();
+    const mx = (ev.clientX - r.left) * (cv.width / r.width);
+    const my = (ev.clientY - r.top) * (cv.height / r.height);
+    const wx = (mx - mv.cx) / mv.s + mv.carx;
+    const wy = (my - mv.cy) / mv.s + mv.cary;
+    const { sim } = this;
+    const node = sim.world.nearestNode(wx, wy, sim.comp);
+    const [nx, ny] = sim.world.nodes.get(node);
+    if (Math.hypot(nx - wx, ny - wy) > 90) {
+      this.toast("Klik deket jalan dong");
+      return;
+    }
+    const vias = [...(sim.mission.via ?? [])];
+    if (ev.shiftKey) {
+      if (!vias.length) return;
+      vias.pop();
+    } else {
+      if (vias.length >= 5) {
+        this.toast("Maks 5 waypoint — shift+klik buat hapus");
+        return;
+      }
+      vias.push(node);
+    }
+    this.h.setVia(vias);
+  }
+
+  // segmented control settings: tandai nilai aktif dari settings tersimpan,
+  // klik = terapkan lewat handler (live / reload tergantung kunci)
+  syncSettings() {
+    const st = this.h.getSettings();
+    const wire = (id, cur, k) => {
+      const el = $(id);
+      const mark = () => el.querySelectorAll("button").forEach((b) =>
+        b.classList.toggle("active", b.dataset.v === String(cur())));
+      el.querySelectorAll("button").forEach((b) => {
+        b.onclick = () => { this.h.setSetting(k, b.dataset.v); mark(); };
+      });
+      mark();
+    };
+    wire("set-mode", () => st.mode, "mode");
+    wire("set-speed", () => st.speed, "speed");
+    wire("set-vehicle", () => st.vehicle ?? "citycar", "vehicle");
+    wire("set-map", () => st.map, "map");
+    wire("set-brain", () => st.brain, "brain");
+    wire("set-traffic", () => (st.traffic ? "on" : "off"), "traffic");
   }
 
   touchControls() {
@@ -121,6 +188,10 @@ export class UI {
     const car = sim.car, m = sim.mission;
     // speed & dock (skala 1:1: m/s -> km/j)
     $("speed").textContent = Math.round(car.speed * 3.6);
+    // badge LIMIT: zona rambu kalau lagi di dalamnya, kalau gak = batas kendaraan
+    const zone = sim.signs ? sim.signs.speedLimitAt(car.x, car.y) : null;
+    $("speed-limit").textContent = Math.round((zone ?? car.MAXV) * 3.6);
+    $("speed-limit").closest(".speed-limit")?.classList.toggle("zone", zone != null);
     const pilot = this.h.isPilot();
     $("pilot-label").textContent = pilot ? "Otopilot aktif" : "Ambil alih";
     $("autopilot").setAttribute("aria-checked", String(pilot));
@@ -189,6 +260,24 @@ export class UI {
       ctx.arc(gx, gy, 7 / s, 0, Math.PI * 2);
       ctx.fill();
     }
+    // waypoint (via): lingkaran cyan bernomor — di klik pemain di minimap
+    if (this.sim.mission.via?.length) {
+      ctx.fillStyle = "#39c2d7";
+      ctx.strokeStyle = "#fff";
+      ctx.lineWidth = 2 / s;
+      this.sim.mission.via.forEach((n, i) => {
+        const [vx, vy] = w.nodes.get(n);
+        ctx.beginPath();
+        ctx.arc(vx, vy, 6 / s, 0, Math.PI * 2);
+        ctx.fill(); ctx.stroke();
+        ctx.fillStyle = "#0b3b44";
+        ctx.font = `${10 / s}px ui-monospace, monospace`;
+        ctx.textAlign = "center"; ctx.textBaseline = "middle";
+        ctx.fillText(String(i + 1), vx, vy);
+        ctx.fillStyle = "#39c2d7";
+      });
+    }
+    this._mv = { s, cx, cy, carx: car.x, cary: car.y };
     ctx.restore();
     // hero: segitiga ikut heading (diganbar layar biar ukurannya stabil)
     const scr = (x, y) => [cx + (x - car.x) * s, cy + (y - car.y) * s];
