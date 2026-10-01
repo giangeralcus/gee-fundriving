@@ -246,3 +246,26 @@ browser) lebih sering jadi penyebab daripada algoritmanya.
   menemukan titik ekuilibrium "nyaris berhenti selamanya". Deteksi zona juga
   harus menjangkau 0m (stopAhead lama mulai dari 3m — penalti nabrak rambu
   gak pernah kepicu karena mobil lewat di bawah 3m).
+
+## 23. Static class field: instance gak punya — NaN diam-diam
+
+- **Kejadian**: ETA balikin NaN tanpa error. Akarnya: ``static CYCLE = 420``
+  di class Signals — ``signals.CYCLE`` (via INSTANCE) itu undefined, cuma
+  ``Signals.CYCLE`` (via kelas) yang valid. ``tArr / undefined = NaN``, NaN
+  menjalar ke jumlah, JSON.stringify(NaN) malah nampil "null" — makin ngelabuin.
+- **Pelajaran**: akses konstanta kelas SELALU lewat nama kelasnya; dan kalau
+  angka estimasi jadi NaN/null aneh, cek dulu pembagian oleh properti yang
+  mungkin undefined (bukan langsung curiga rumusnya).
+
+## 24. ETA yang jujur itu bisa dihitung, bukan tebak
+
+- **Kejadian**: ETA ala Maps buat sim kita: integrasi sisa rute vs profil
+  kecepatan (kendaraan/tikungan/zona) + lampu (siklus DETERMINISTIK — sisa
+  merah dihitung eksak dari fase saat estimasi tiba) + dwell STOP sebagai
+  SELISIH vs ngebut lewat (v/2b + v/2a + dwell — biar gak dobel hitung jarak
+  yang udah diintegrasi). Hasil: error 9-19% vs waktu aktual (sumber error:
+  trafik acak & deadlock breaker).
+- **Pelajaran**: estimasi yang bagus = jumlah komponen yang masing-masing
+  bisa dijelaskan. Tulis asumsinya di komentar (Δs=6m, dwell 0,8s, dsb) biar
+  bisa diaudit; validasi error-nya terhadap ground truth, jangan cuma
+  "keliatan masuk akal".

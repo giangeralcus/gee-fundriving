@@ -47,7 +47,7 @@ function paint(geo, hex) {
 }
 
 export class Scene3D {
-  constructor(container, world, heroSpec = null, signs = null, parked = null) {
+  constructor(container, world, heroSpec = null, signs = null, parked = null, signals = null) {
     this.world = world;
     this.heroSpec = heroSpec;
     this.renderer = new THREE.WebGLRenderer({
@@ -62,7 +62,20 @@ export class Scene3D {
     this.scene.add(new THREE.HemisphereLight(0xdfeaff, 0x8a9a6d, 1.35));
     const sun = new THREE.DirectionalLight(0xfff4e0, 1.7);
     sun.position.set(-500, 800, 350);
+    // BAYANGAN BENERAN: shadow camera kecil yang ngikutin hero tiap frame
+    // (lihat update()) — biar resolusi 2048 cukup buat area sekitar mobil.
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.camera.left = -150;
+    sun.shadow.camera.right = 150;
+    sun.shadow.camera.top = 150;
+    sun.shadow.camera.bottom = -150;
+    sun.shadow.camera.near = 10;
+    sun.shadow.camera.far = 900;
+    sun.shadow.bias = -0.0015;
+    this.sun = sun;
     this.scene.add(sun);
+    this.scene.add(sun.target);
     this.camModes = ["Chase", "Driver", "Top"];
     this.camMode = "Chase";
     this.camPos = new THREE.Vector3();
@@ -72,6 +85,10 @@ export class Scene3D {
     this._buildDynamic();
     if (signs) this._buildSigns(signs);
     if (parked) this._buildParked(parked);
+    if (signals) this._buildCrosswalks(signals);
+    this._buildLamps();
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     window.addEventListener("resize", () => {
       this.renderer.setSize(container.clientWidth, container.clientHeight);
       this.camera.aspect = container.clientWidth / container.clientHeight;
@@ -88,6 +105,7 @@ export class Scene3D {
       new THREE.MeshLambertMaterial({ color: COL.grass }));
     ground.rotation.x = -Math.PI / 2;
     ground.position.set((w.minx + w.maxx) / 2, 0, (w.miny + w.maxy) / 2);
+    ground.receiveShadow = true;
     this.scene.add(ground);
 
     const shapeFrom = (pts) => {
@@ -140,10 +158,13 @@ export class Scene3D {
     const major = w.segs.filter((s) => s.wd >= 7.5);
     this.scene.add(new THREE.Mesh(quadGeo(w.segs, 1.5, 0.03),
       new THREE.MeshLambertMaterial({ color: COL.casing, side: THREE.DoubleSide })));
-    this.scene.add(new THREE.Mesh(quadGeo(minor, 0, 0.05),
-      new THREE.MeshLambertMaterial({ color: COL.asphalt, side: THREE.DoubleSide })));
-    this.scene.add(new THREE.Mesh(quadGeo(major, 0, 0.05),
-      new THREE.MeshLambertMaterial({ color: COL.asphaltMajor, side: THREE.DoubleSide })));
+    const asp1 = new THREE.Mesh(quadGeo(minor, 0, 0.05),
+      new THREE.MeshLambertMaterial({ color: COL.asphalt, side: THREE.DoubleSide }));
+    const asp2 = new THREE.Mesh(quadGeo(major, 0, 0.05),
+      new THREE.MeshLambertMaterial({ color: COL.asphaltMajor, side: THREE.DoubleSide }));
+    asp1.receiveShadow = true;
+    asp2.receiveShadow = true;
+    this.scene.add(asp1, asp2);
     // disc joint nutup celah quads di tikungan & simpang
     const nodeSegs = new Map();
     for (const s of w.segs)
@@ -228,6 +249,8 @@ export class Scene3D {
     if (bldgGeos.length) {
       const m = new THREE.Mesh(mergeGeometries(bldgGeos),
         new THREE.MeshLambertMaterial({ vertexColors: true }));
+      m.castShadow = true;
+      m.receiveShadow = true;
       this.scene.add(m);
     }
 
@@ -254,10 +277,14 @@ export class Scene3D {
       }
     }
     if (trunks.length) {
-      this.scene.add(new THREE.Mesh(mergeGeometries(trunks),
-        new THREE.MeshLambertMaterial({ vertexColors: true })));
-      this.scene.add(new THREE.Mesh(mergeGeometries(leaves),
-        new THREE.MeshLambertMaterial({ vertexColors: true })));
+      const tm = new THREE.Mesh(mergeGeometries(trunks),
+        new THREE.MeshLambertMaterial({ vertexColors: true }));
+      tm.castShadow = true;
+      this.scene.add(tm);
+      const lm = new THREE.Mesh(mergeGeometries(leaves),
+        new THREE.MeshLambertMaterial({ vertexColors: true }));
+      lm.castShadow = true;
+      this.scene.add(lm);
     }
   }
 
@@ -335,9 +362,12 @@ export class Scene3D {
     blob.rotation.x = -Math.PI / 2;
     blob.scale.set(len * 0.75, wid * 1.25, 1);
     blob.position.y = 0.048;
+    blob.material.opacity = hero ? 0.12 : 0.16;   // dipudarkan: ada bayangan asli
     blob.renderOrder = 1;
     g.add(blob);
     g.userData = { wheels, spin: 0, len, wid };
+    // bodi mobil & roda nge-cast bayangan beneran (sun shadow camera ikut hero)
+    g.traverse((o) => { if (o.isMesh && o !== blob) o.castShadow = true; });
     return g;
   }
 
@@ -502,10 +532,89 @@ export class Scene3D {
     return m;
   }
 
+  // zebra cross di tiap simpang berlampu: dua pita (satu per sumbu jalan),
+  // strip 0,6 m tiap 1,15 m selebar jalan. Deterministik dari posisi node.
+  _buildCrosswalks(signals) {
+    const w = this.world;
+    const geos = [];
+    for (const [nx, ny] of signals.pos) {
+      const hw = Math.min(9, w.nearestSegW(nx, ny));
+      for (const side of [-1, 1]) {
+        // sumbu 0 (jalan horizontal): pendekat dari barat/timur
+        for (const sgn of [side]) {
+          const x = nx + sgn * (hw + 2.6);
+          for (let z = -hw + 0.8; z <= hw - 0.8; z += 1.15) {
+            const g = new THREE.BoxGeometry(2.6, 0.03, 0.6);
+            g.translate(x, 0.075, ny + z);
+            geos.push(g);
+          }
+        }
+        // sumbu 1 (jalan vertikal)
+        const z0 = ny + side * (hw + 2.6);
+        for (let x = -hw + 0.8; x <= hw - 0.8; x += 1.15) {
+          const g = new THREE.BoxGeometry(0.6, 0.03, 2.6);
+          g.translate(nx + x, 0.075, z0);
+          geos.push(g);
+        }
+      }
+    }
+    if (!geos.length) return;
+    const m = new THREE.Mesh(mergeGeometries(geos),
+      new THREE.MeshBasicMaterial({ color: 0xf2f3f5 }));
+    m.receiveShadow = false;
+    this.scene.add(m);
+  }
+
+  // lampu jalan di sepanjang jalan utama: tiang + lengan ke jalan + kepala
+  // terang. Penempatan deterministik dari index ruas (bukan Math.random).
+  _buildLamps() {
+    const w = this.world;
+    const poles = [], heads = [];
+    let k = 0;
+    for (const s of w.segs) {
+      if (s.wd < 7.5) continue;
+      const L = Math.hypot(s.bx - s.ax, s.by - s.ay);
+      const ux = (s.bx - s.ax) / L, uy = (s.by - s.ay) / L;
+      const rx = uy, rz = -ux;                       // sisi kanan ruas
+      const n = Math.floor(L / 46);
+      for (let i = 0; i < n; i++) {
+        const t = 24 + i * 46 + ((k * 37) % 11);
+        if (t > L - 24) break;
+        const x = s.ax + ux * t + rx * (s.wd + 0.9);
+        const z = s.ay + uy * t + rz * (s.wd + 0.9);
+        const ang = Math.atan2(uy, ux);
+        const pole = new THREE.CylinderGeometry(0.09, 0.13, 7.2, 6);
+        pole.translate(x, 3.6, z);
+        poles.push(pole);
+        const arm = new THREE.BoxGeometry(1.9, 0.09, 0.12);
+        arm.rotateY(-ang);
+        arm.translate(x - rx * 0.85, 7.1, z - rz * 0.85);
+        poles.push(arm);
+        const head = new THREE.BoxGeometry(0.72, 0.16, 0.3);
+        head.rotateY(-ang);
+        head.translate(x - rx * 1.7, 7.0, z - rz * 1.7);
+        heads.push(head);
+        k++;
+      }
+    }
+    if (poles.length) {
+      const pm = new THREE.Mesh(mergeGeometries(poles),
+        new THREE.MeshLambertMaterial({ color: 0x8d939c }));
+      pm.castShadow = true;
+      this.scene.add(pm);
+      this.scene.add(new THREE.Mesh(mergeGeometries(heads),
+        new THREE.MeshBasicMaterial({ color: 0xfff2c8 })));
+    }
+  }
+
   update(sim, steerView = 0) {
     this._sim = sim;
     this._ensureSignals();
     const car = sim.car;
+    // sun + shadow camera ngikutin hero (arah matahari konsisten)
+    this.sun.position.set(car.x - 220, 350, car.y + 155);
+    this.sun.target.position.set(car.x, 0, car.y);
+    this.sun.target.updateMatrixWorld();
     this._placeCar(this.hero, car.x, car.y, car.heading, steerView, car.speed);
     this.trafficMeshes.slice(sim.traffic.cars.length).forEach((m) => this.scene.remove(m));
     this.trafficMeshes.length = Math.min(this.trafficMeshes.length, sim.traffic.cars.length);

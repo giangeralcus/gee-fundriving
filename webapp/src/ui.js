@@ -4,6 +4,7 @@
 // panggil ui.update(sim) tiap frame.
 
 import { Signals } from "./sim/signals.js";
+import { estimateEta } from "./sim/eta.js";
 
 const $ = (id) => document.getElementById(id);
 const rad = (d) => (d * Math.PI) / 180;
@@ -207,6 +208,20 @@ export class UI {
     const cum = sim.planner?.cum;
     $("remaining").textContent = cum
       ? `${Math.max(0, Math.round(cum[cum.length - 1] - (sim.planner.s || 0)))} m ke tujuan` : "—";
+    // ETA (integrasi rute + lampu + STOP + parkir) — matematika di sim/eta.js
+    if (this._frame % 30 === 0) {
+      this._eta = estimateEta({ car: sim.car, mission: sim.mission,
+        signs: sim.signs, signals: sim.signals, frame: sim.signals.frame });
+    }
+    if (this._eta) {
+      const mm = Math.floor(this._eta.sec / 60);
+      const ss = Math.round(this._eta.sec % 60);
+      $("eta-info").textContent =
+        `⏱ ${mm}:${String(ss).padStart(2, "0")} · rata² ${Math.round(this._eta.avg * 3.6)} km/j`
+        + (this._eta.stops ? ` · ${this._eta.stops} berhenti` : "");
+    } else {
+      $("eta-info").textContent = "";
+    }
     // minimap tiap 6 frame
     if (this.mapOpen && this._frame % 6 === 0) this._minimap();
     // json inspector tiap 15 frame kalau kebuka & gak beku

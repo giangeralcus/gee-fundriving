@@ -131,10 +131,17 @@ export async function decideCore(ctx, snap) {
       const steerT = Math.max(-1, Math.min(1, Math.atan((2 * yLocal / (Ld * Ld)) * wb) / steerMax));
       const dD = Math.max(-1.7 * DT, Math.min(1.7 * DT, steerT * steerMax - gDelta));
       gDelta += dD;
-      const yawRate = (v / wb) * Math.tan(gDelta);
+      let yawRate = (v / wb) * Math.tan(gDelta);
+      // CERMIN car.step: batas genggam lateral μg (rollout asumsi aspal μ=1,
+      // kandidat off-road udah dihukum counter offroad terpisah)
+      if (Math.abs(v) > 0.5) {
+        const yawMax = 9.81 / Math.abs(v);
+        yawRate = Math.max(-yawMax, Math.min(yawMax, yawRate));
+      }
       ghd = wrapDeg(ghd + deg(yawRate) * DT);
       if (v > tgtEff + 0.1) v = Math.max(0.0, v - brakeV4 * DT);
       else if (v < tgtEff - 0.1) v = Math.min(maxv, v + accV4 * DT);
+      else v = Math.max(0.0, v - ((snap.roll ?? 0.15) + (snap.drag ?? 0.0025) * v * v) * DT);
       const a = rad(ghd);
       gx += Math.cos(a) * v * DT;
       gy += Math.sin(a) * v * DT;
@@ -339,6 +346,7 @@ export class Planner {
       lookahead: car.lookahead(),
       wheelbase: car.wheelbase, steerMax: car.steerMax, delta: car.delta,
       acc: car.ACC, brake: car.BRAKE, len: car.len, wid: car.wid,
+      roll: car.spec.roll, drag: car.spec.drag,
       zoneCap: state.speedCap ?? null,
       // ambang off-road ikut lebar jalan (halfw + setengah lebar mobil + margin)
       offRoadM: this.world.nearestSegW(car.x, car.y) + 2.2,

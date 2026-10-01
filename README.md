@@ -18,14 +18,20 @@ km/j — autopilot nurut, HUD LIMIT ikut berubah; langgar STOP = penalti),
 **parkiran tepi jalan** (mobil parkir = obstacle; slot kosong = target),
 **parkir otonom** (auto-park di tujuan atau tekan `[K]`: servo masuk bay,
 goyangan mundur-maju ala parkir beneran — mobil punya gear R — lalu rem
-rapat; dialog sampai-tujuan nampilin 🅿️), navigation card (belokan
-berikutnya + sisa jarak), minimap ber-route, driver dock (speed + LIMIT +
-tombol otopilot), inspector JSON live 4 Hz (payload planner + respons),
-dialog sampai-tujuan & game-over, touch thumbstick, loading screen, dan
-dunia siang bermarka. Gerakan mobil pakai **model sepeda
-kinematik** (yaw = v·tan(delta)/wheelbase, sudut roda di-rate-limit) — belokan
-halus dan otomatis ikut skala kendaraan (bus radius putarnya lebar). Planner
-jalan di web worker. Live: **https://gee-fundriving.pages.dev**
+rapat; dialog sampai-tujuan nampilin 🅿️), **ETA ala navigasi** (⏱ di nav card:
+integrasi sisa rute vs profil kecepatan + sisa fase merah lampu yang
+siklusnya deterministik + dwell STOP `v/2b + v/2a + 0,8s`), navigation card
+(belokan berikutnya + sisa jarak), minimap ber-route, driver dock (speed +
+LIMIT + tombol otopilot), inspector JSON live 4 Hz (payload planner +
+respons), dialog sampai-tujuan & game-over, touch thumbstick, loading screen,
+dan dunia siang bermarka lengkap (zebra cross, lampu jalan, bayangan
+beneran). Gerakan mobil pakai **model sepeda kinematik** (yaw =
+v·tan(delta)/wheelbase, sudut roda di-rate-limit) **+ batas genggam lateral
+μg** (lingkaran gesek — understeer realistis saat kebut; di luar aspal μ
+0,55) **+ hambatan jalan** (rolling + drag kuadratik — mobil nyelesai sendiri
+tanpa gas) — belokan halus dan otomatis ikut skala kendaraan (bus radius
+putarnya lebar). Planner jalan di web worker. Live:
+**https://gee-fundriving.pages.dev**
 
 Default mode **satu kendaraan** (challenge penyempurnaan mobil hero: lane
 keeping, tikungan, lampu merah). Mau mobil AI balik? `?traffic=1`.
@@ -43,7 +49,8 @@ Chase/Driver/Top, `[P]`/`[ESC]` pause, `[R]` misi baru, `[K]` parkir otopilot,
 Param URL: `?brain=v3` (brain lama), `?jev=https://...` (hook LLM eksternal),
 `?traffic=1`, `?map=/file.json`.
 Smoke test headless (Node, tanpa browser): `node tools/benchmark.mjs --brain v4
---seconds 300` (default 240s kekecilan buat misi panjang + rambu STOP).
+--seconds 360` (fisika genggam-lat + rambu bikin rata-rata pelan ~15% —
+budget 240s lama kekecilan buat misi panjang).
 
 ## Loop City (default, peta internal — instan & gampang diadaptasi)
 

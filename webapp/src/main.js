@@ -182,7 +182,7 @@ sim = createSim(data, {
     ? () => new Worker(new URL("./planner.worker.js", import.meta.url), { type: "module" })
     : null,
 });
-view = new Scene3D($("drive-area") ?? document.querySelector(".drive-area"), sim.world, sim.car.spec, sim.signs);
+view = new Scene3D($("drive-area") ?? document.querySelector(".drive-area"), sim.world, sim.car.spec, sim.signs, sim.parked, sim.signals);
 window.__gfd = {};
 
 setLoad("Menyiapkan HUD…", 85);

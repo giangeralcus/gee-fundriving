@@ -45,6 +45,7 @@ export class MapCar {
     this.BRAKE = vehicle.brake;
     this.delta = 0.0;    // sudut kemudi roda depan saat ini (rad)
     this.gear = 1;       // 1 maju, -1 mundur (parkir otonom butuh R)
+    this.laneOffLock = null;   // dipakai mode parkir: ikut jalur persis
     this.speed = 0.0;    // m/s
     const [x, y] = world.nodes.get(startNode);
     this.x = x; this.y = y;
@@ -214,13 +215,32 @@ export class MapCar {
     const dDelta = Math.max(-STEER_RATE * DT,
       Math.min(STEER_RATE * DT, deltaTarget - this.delta));
     this.delta += dDelta;
-    const yawRate = (this.speed / this.wheelbase) * Math.tan(this.delta);
+    let yawRate = (this.speed / this.wheelbase) * Math.tan(this.delta);
+    // batas genggam lateral (lingkaran gesek): a_lat = v·|yaw| ≤ μ·g.
+    // μ aspal 1.0, di luar aspal 0.55 — inilah understeer realistis kalau
+    // kebut di tikungan (yaw kinematik minta lebih dari ban sanggup).
+    const hw = this.world.nearestSegW(this.x, this.y);
+    const offRoad = this.project().dist > hw + 0.4;
+    const mu = offRoad ? 0.55 : 1.0;
+    this.mu = mu;
+    if (Math.abs(this.speed) > 0.5) {
+      const yawMax = (mu * 9.81) / Math.abs(this.speed);
+      yawRate = Math.max(-yawMax, Math.min(yawMax, yawRate));
+    }
     this.heading = wrapDeg(this.heading + (yawRate / DEG) * DT);
     // gear mundur: target kecepatan negatif (maks 40% kecepatan maju);
     // model sepeda yang sama bikin mundur otomatis steer kebalik — fisik beneran
     const tgtSpeed = this.gear < 0 ? -this.MAXV * 0.4 : this.MAXV;
-    if (brk > 0) this.speed = this._toward(this.speed, 0.0, this.BRAKE * brk * DT);
-    else if (thr > 0) this.speed = this._toward(this.speed, tgtSpeed, this.ACC * thr * DT);
+    if (brk > 0) this.speed = this._toward(this.speed, 0.0, this.BRAKE * brk * mu * DT);
+    else if (thr > 0) this.speed = this._toward(this.speed, tgtSpeed,
+      this.ACC * thr * (offRoad ? 0.7 : 1) * DT);
+    else {
+      // hambatan jalan: rolling konstan + drag kuadratik — mobil pelan-pelan
+      // nyelesai sendiri tanpa gas (dulu: cruise selamanya — gak fisik)
+      const dec = (this.spec.roll + this.spec.drag * this.speed * this.speed) * DT;
+      this.speed = this.speed >= 0 ? Math.max(0, this.speed - dec)
+                                   : Math.min(0, this.speed + dec);
+    }
     const a = (this.heading * Math.PI) / 180;
     this.x += Math.cos(a) * this.speed * DT;
     this.y += Math.sin(a) * this.speed * DT;

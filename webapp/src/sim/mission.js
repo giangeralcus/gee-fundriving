@@ -74,8 +74,17 @@ export class Mission {
     if (r.length < 2) return false;
     const pts = simplify(r.map((n) => this.world.nodes.get(n)), this.world.meta.simplifyEps ?? 12.0);
     this.via = null;
+    this._abortParking(car);
     this._set(goalNode, pts, car);
     return true;
+  }
+
+  // matikan mode parkir (dipakai pas misi diganti manual: waypoint, dll)
+  _abortParking(car) {
+    this.parking = false;
+    this.maneuver = null;
+    this.parkBay = null;
+    if (car) car.laneOffLock = null;
   }
 
   // Rute lewat waypoint (ala "add stop" di Google Maps): from -> via1 ->
@@ -95,6 +104,7 @@ export class Mission {
       else pts.push(...s.slice(1));
     }
     this.via = [...viaNodes];
+    this._abortParking(car);
     this._set(viaNodes[viaNodes.length - 1], pts, car);
     return true;
   }
@@ -135,7 +145,11 @@ export class Mission {
                    bay.cy - Math.sin(bay.ang) * (bay.len / 2 + 2.2)];
     const end = [bay.cx + Math.cos(bay.ang) * (bay.len * 0.28),
                  bay.cy + Math.sin(bay.ang) * (bay.len * 0.28)];
-    pts.push(mouth, [bay.cx, bay.cy], end);
+    // titik tengah anchor→mouth: jog lateral 6m+ jadi transisi mulus (pure
+    // pursuit gak perlu belok tajam mendadak masuk bay)
+    const lastPt = pts[pts.length - 1];
+    const mid = [(lastPt[0] + mouth[0]) / 2, (lastPt[1] + mouth[1]) / 2];
+    pts.push(mid, mouth, [bay.cx, bay.cy], end);
     this.parkBay = bay;
     this.parking = true;
     this.maneuver = null;
@@ -157,8 +171,8 @@ export class Mission {
       pt: 0,
       phases: [
         { gear: 1, steer: null, servoIn: true },                        // masuk bay pelan
-        { gear: -1, steer: -0.75, untilDeg: -20, dir: -1 },             // mundur, ekor ke trotoar
-        { gear: 1, steer: 0.75, untilDeg: -1.5, dir: 1 },               // maju lurusin
+        { gear: -1, steer: 0.75, untilDeg: -20, dir: -1 },             // mundur (kemudi ditahan)
+        { gear: 1, steer: 0.75, untilDeg: -1.5, dir: 1 },              // maju (kemudi sama — wiggle)
         { gear: 1, steer: null, servo: true },                          // align presisi
         { gear: 1, steer: 0, thr: 0, brk: 1, dur: 42 },                 // rem -> terparkir
       ],
@@ -176,23 +190,28 @@ export class Mission {
     const tx = bay.cx + Math.cos(bay.ang) * (bay.len * 0.28);
     const ty = bay.cy + Math.sin(bay.ang) * (bay.len * 0.28);
     if (p.servoIn || p.servo) {
+      // go-to-goal: target di belakang (>100°) → putar dulu; di depan →
+      // pure pursuit bidik titik (konvergen buat TITIK — Stanley law buat
+      // jalur, dipakai buat titik malah muter ngelilingin target)
       const dx = tx - car.x, dy = ty - car.y;
       const dist = Math.hypot(dx, dy);
-      const h = car.heading * DEG;
-      const eCt = -dx * Math.sin(h) + dy * Math.cos(h);
-      const thE = ((bay.ang / DEG - car.heading + 540) % 360) - 180;
-      const delta = thE * DEG * 0.6 + Math.atan2(0.5 * eCt, Math.abs(car.speed) + 0.7);
-      const steer = Math.max(-1, Math.min(1, delta / car.steerMax));
-      const tolD = p.servoIn ? 1.1 : 0.5, tolH = p.servoIn ? 10 : 6;
+      const thB = wrapErr((Math.atan2(dy, dx) * 180) / Math.PI - car.heading);
+      const thE = wrapErr(bay.ang / DEG - car.heading);
+      const steer = Math.abs(thB) > 100
+        ? (thB > 0 ? 0.9 : -0.9)
+        : car.purePursuitSteer(tx, ty);
       m.pt++;
-      const maxTicks = p.servoIn ? 1800 : 900;
-      if ((dist < tolD && Math.abs(thE) < tolH) || m.pt > maxTicks) {
+      const maxTicks = p.servoIn ? 1200 : 600;
+      const ok = p.servoIn
+        ? (dist < 2.2 && Math.abs(thB) < 45)
+        : (dist < 0.8 && Math.abs(thE) < 12);
+      if (ok || m.pt > maxTicks) {
         m.i++; m.pt = 0;
         return this.playManeuver(car);
       }
       m.gear = 1;
-      const thr = Math.abs(car.speed) > 1.3 ? 0 : 0.5;
-      const brk = Math.abs(car.speed) > 2.2 ? 0.6 : 0;
+      const thr = Math.abs(car.speed) > 1.1 ? 0 : 0.45;
+      const brk = Math.abs(car.speed) > 2.0 ? 0.6 : 0;
       return [steer, thr, brk, false];
     }
     if (p.untilDeg !== undefined) {

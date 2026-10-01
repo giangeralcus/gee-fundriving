@@ -69,6 +69,8 @@
     .navigation-card span { color: var(--muted); }
     .navigation-card .nav-divider { width: 1px; height: 26px; background: var(--line); }
     .navigation-card #remaining { font-weight: 600; color: #171a20; white-space: nowrap; }
+    .nav-eta { display: flex; flex-direction: column; }
+    .nav-eta #eta-info { color: var(--muted); font-size: 11px; white-space: nowrap; }
     .minimap { padding: 8px; }
     .minimap-toolbar { display: flex; justify-content: space-between; margin-bottom: 6px; }
     .minimap-toolbar .zoomer { display: flex; }
@@ -256,7 +258,7 @@
       <span id="turn-icon">↑</span>
       <div><strong id="next-maneuver">Lurus</strong><span id="turn-distance"></span></div>
       <span class="nav-divider"></span>
-      <span id="remaining">—</span>
+      <div class="nav-eta"><span id="remaining">—</span><span id="eta-info"></span></div>
       <button id="map-toggle" title="Buka/tutup peta rute">🗺</button>
     </div>
     <div id="minimap" class="minimap glass">
