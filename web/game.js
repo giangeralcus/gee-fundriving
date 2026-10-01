@@ -31,6 +31,9 @@ class World {
     this.adj = new Map();          // id -> Set(id)
     this.halfw = new Map();        // "min|max" -> half width
     this.wayName = new Map();
+    this.edges = [];               // pasangan id node unik [[a,b],...] — SATU sumber
+    this.edgeById = new Map();     // "min|max" -> [a,b]
+    this.edgeByPos = new Map();    // "ax,ay|bx,by" -> [a,b] (kedua arah)
     for (const r of d.roads) {
       this.wayName.set(r.id, r.name || "");
       const wd = (r.width || 10) / 2 * widthScale;
@@ -43,6 +46,10 @@ class World {
         this.adj.get(b).add(a);
         const k = Math.min(a, b) + "|" + Math.max(a, b);
         if (!this.halfw.has(k) || wd < this.halfw.get(k)) this.halfw.set(k, wd);
+        if (!this.edgeById.has(k)) {
+          this.edges.push([a, b]);
+          this.edgeById.set(k, [a, b]);
+        }
       }
     }
     // segmen render: [ax,ay,bx,by,hw,kind]
@@ -58,6 +65,11 @@ class World {
         if (seen.has(k)) continue;
         seen.add(k);
         const [ax, ay] = this.nodes.get(a), [bx, by] = this.nodes.get(b);
+        const pair = this.edgeById.get(k);
+        if (pair) {
+          this.edgeByPos.set(ax + "," + ay + "|" + bx + "," + by, pair);
+          this.edgeByPos.set(bx + "," + by + "|" + ax + "," + ay, pair);
+        }
         this.segs.push([ax, ay, bx, by, wd, kind]);
       }
     }
@@ -169,11 +181,22 @@ class Signals {
   static DRAW_RADIUS = 420;
   static MAJOR = new Set(["motorway", "trunk", "primary", "secondary", "tertiary", "residential"]);
 
-  constructor(_world, _comp) {
-    // nodeList/pos/nodeSet diisi Game._signalsEdgeIds() (butuh graf + comp)
-    this.nodeList = [];
-    this.pos = [];
-    this.nodeSet = new Set();
+  constructor(world, comp) {
+    // Simpang nyata: derajat >= 4 di segmen kelas besar (paritas desktop).
+    // world.edges/edgeByPos satu sumber — gak ada matching posisi lagi.
+    this.world = world;
+    const cand = new Set();
+    for (const [ax, ay, bx, by, _wd, kind] of world.segs) {
+      if (!Signals.MAJOR.has(kind)) continue;
+      const pair = world.edgeByPos.get(ax + "," + ay + "|" + bx + "," + by);
+      if (!pair) continue;
+      const [a, b] = pair;
+      if (comp.has(a) && (world.adj.get(a)?.size || 0) >= 4) cand.add(a);
+      if (comp.has(b) && (world.adj.get(b)?.size || 0) >= 4) cand.add(b);
+    }
+    this.nodeList = [...cand].sort((x, y) => x - y);
+    this.pos = this.nodeList.map(n => world.nodes.get(n));
+    this.nodeSet = new Set(this.nodeList);
     this.frame = 0;
   }
 
@@ -334,13 +357,16 @@ class MapCar {
   static LOOKAHEAD_BASE = 16; static LOOKAHEAD_GAIN = 6.0;
   static CAPTURE = 12.0; static LANE_OFF = 3.5;
 
-  constructor(world, startNode, route) {
+  constructor(world, startNode, route, speedScale = 1.0) {
     this.world = world;
     this.route = route;
     this.wpI = 0;
     const [x, y] = world.nodes.get(startNode);
     this.x = x; this.y = y;
     this.speed = 0; this.finished = false; this.aliveTime = 0;
+    // kecepatan basis bisa diatur (SETTINGS): instance menimpa static
+    this.MAXV = MapCar.MAXV * speedScale;
+    this.ACC = MapCar.ACC * speedScale;
     this.initHeading();
   }
 
@@ -415,15 +441,15 @@ class MapCar {
       curv = Math.max(curv, ang * wgt);
       accD += n1; i++;
     }
-    return { lateral: dist, halfw: hw, headingErr, speedNorm: this.speed / MapCar.MAXV,
+    return { lateral: dist, halfw: hw, headingErr, speedNorm: this.speed / this.MAXV,
              wp: tgt, cx, cy, curv };
   }
 
   step(steer, thr, brk) {
-    const turn = steer * 3.4 * (0.45 + 0.55 * this.speed / MapCar.MAXV);
+    const turn = steer * 3.4 * (0.45 + 0.55 * this.speed / this.MAXV);
     this.heading = (this.heading + turn) % 360;
     if (brk > 0) this.speed = Math.max(0.0, this.speed - 0.15);
-    else if (thr > 0) this.speed = Math.min(MapCar.MAXV, this.speed + MapCar.ACC * thr);
+    else if (thr > 0) this.speed = Math.min(this.MAXV, this.speed + this.ACC * thr);
     const a = rad(this.heading);
     this.x += Math.cos(a) * this.speed;
     this.y += Math.sin(a) * this.speed;
@@ -436,25 +462,29 @@ class MapCar {
 }
 
 function mapBrain(state) {
+  // Brain v3 — Regulated Pure Pursuit: v_target kontinyu dari curvature
+  // (paritas dengan map_brain desktop), plus ACC + anti-stall.
   const he = state.headingErr, curv = state.curv, gap = state.aheadGap;
-  let steer = clamp(he / 40.0, -1, 1);
-  let thr, brk, acc = "";
+  const steer = clamp(he / 40.0, -1, 1);
   const sharp = Math.abs(he);
-  if (curv > 50) { thr = 0.0; brk = 0.9; }
-  else if (curv > 30) { thr = 0.25; brk = 0.0; }
-  else if (curv > 15) { thr = 0.65; brk = 0.0; }
-  else { thr = 1.0; brk = 0.0; }
-  if (sharp > 90) { thr = 0.0; brk = 1.0; }
-  else if (sharp > 45) { thr = Math.min(thr, 0.25); brk = 0.0; }
-  else if (sharp > 20) thr = Math.min(thr, 0.6);
+  let vt = 1.0 / (1.0 + curv / 40.0);
+  if (sharp > 90) vt = 0.0;
+  else if (sharp > 45) vt = Math.min(vt, 0.25);
+  else if (sharp > 20) vt = Math.min(vt, 0.6);
+  const speedNorm = state.speedNorm || 0;
+  const dv = vt - speedNorm;
+  let thr = 0.0, brk = 0.0, acc = "";
+  if (dv < -0.04) brk = Math.min(1.0, -dv * 3.0);
+  else if (dv > 0.04) thr = Math.min(1.0, dv * 3.0);
+  else thr = 0.2;
   if (gap !== undefined && gap !== null) {
     if (gap < 10) { thr = 0.0; brk = 1.0; acc = "REM!"; }
     else if (gap < 20) { thr = 0.0; brk = 0.7; acc = "REM!"; }
     else if (gap < 35) { thr = 0.0; brk = 0.0; acc = "ikut"; }
     else if (gap < 60) { thr = Math.min(thr, 0.35); acc = "geser"; }
   }
-  if ((state.speedNorm || 0) < 0.05 && (gap === undefined || gap === null) && brk > 0) { thr = 0.35; brk = 0.0; }
-  return { steer, thr, brk, dec: { he, lat: state.lateral, acc } };
+  if (speedNorm < 0.05 && (gap === undefined || gap === null) && brk > 0) { thr = 0.35; brk = 0.0; }
+  return { steer, thr, brk, dec: { he, lat: state.lateral, acc, vt } };
 }
 
 function driverControls(pressed) {
@@ -545,9 +575,11 @@ class Game {
       if (d > bd) { bd = d; goal = n; }
     }
     const route = this.world.route(start, goal);
-    this.car = new MapCar(this.world, start, simplify(route.map(n => this.world.nodes.get(n)), 12.0));
+    this.speedScale = settings.speed || 1.0;
+    this.car = new MapCar(this.world, start,
+                          simplify(route.map(n => this.world.nodes.get(n)), 12.0),
+                          this.speedScale);
     this.signals = new Signals(this.world, comp);
-    this._signalsEdgeIds();   // pasangkan segmen -> id node buat deteksi simpang
     const nAi = Math.max(6, Math.min(16, Math.floor(this.world.totalLen / 700)));
     this.traffic = new Traffic(this.world, comp, [sx0, sy0], nAi);
     this.mission = new Mission(this.world, comp, start);
@@ -567,46 +599,6 @@ class Game {
       window.addEventListener("keydown", this._keydown);
       window.addEventListener("keyup", this._keyup);
     }
-  }
-
-  _signalsEdgeIds() {
-    // simpang nyata: derajat >= 4 di segmen kelas besar (paritas desktop)
-    const cand = new Set();
-    for (const [ax, ay, bx, by, _wd, kind] of this.world.segs) {
-      if (!Signals.MAJOR.has(kind)) continue;
-      const pair = this._findEdge(ax, ay, bx, by);
-      if (!pair) continue;
-      const [a, b] = pair;
-      if (this.comp.has(a) && (this.world.adj.get(a)?.size || 0) >= 4) cand.add(a);
-      if (this.comp.has(b) && (this.world.adj.get(b)?.size || 0) >= 4) cand.add(b);
-    }
-    this.signals.nodeList = [...cand].sort((x, y) => x - y);
-    this.signals.pos = this.signals.nodeList.map(n => this.world.nodes.get(n));
-    this.signals.nodeSet = new Set(this.signals.nodeList);
-  }
-
-  _edgeCache() {
-    if (this._edges) return this._edges;
-    this._edges = [];
-    const seen = new Set();
-    for (const [a, nbrs] of this.world.adj) {
-      for (const b of nbrs) {
-        const k = Math.min(a, b) + "|" + Math.max(a, b);
-        if (seen.has(k)) continue;
-        seen.add(k);
-        this._edges.push([a, b]);
-      }
-    }
-    return this._edges;
-  }
-
-  _findEdge(ax, ay, bx, by) {
-    for (const [a, b] of this._edgeCache()) {
-      const [nx1, ny1] = this.world.nodes.get(a), [nx2, ny2] = this.world.nodes.get(b);
-      if (((nx1 === ax && ny1 === ay && nx2 === bx && ny2 === by) ||
-           (nx1 === bx && ny1 === by && nx2 === ax && ny2 === ay))) return [a, b];
-    }
-    return null;
   }
 
   dispose() {
@@ -907,7 +899,8 @@ class Game {
 }
 
 // ------------------------------------------------- menu / settings / about --
-const DEFAULT_SETTINGS = { mode: "assistant", fps: 30 };
+const SPEEDS = [0.5, 0.75, 1.0, 1.25, 1.5];   // pengali kecepatan basis
+const DEFAULT_SETTINGS = { mode: "assistant", fps: 30, speed: 1.0 };
 
 function loadSettings() {
   try {
@@ -915,6 +908,7 @@ function loadSettings() {
     return {
       mode: s.mode === "manual" ? "manual" : "assistant",
       fps: s.fps === 60 ? 60 : 30,
+      speed: SPEEDS.includes(s.speed) ? s.speed : 1.0,
     };
   } catch (_e) { return { ...DEFAULT_SETTINGS }; }
 }
@@ -960,12 +954,16 @@ class MenuApp {
       else if (k === "Enter" || k === "NumpadEnter" || k === "Space") this.activate(this.sel);
       this.needRender = true;
     } else if (this.state === "settings") {
-      const rows = 3;
+      const rows = 3;   // MODE, KECEPATAN, RENDER FPS (+ baris KEMBALI)
       if (k === "Escape") this.state = "menu";
       else if (k === "ArrowUp" || k === "KeyW") this.selSettings = (this.selSettings + rows) % (rows + 1);
       else if (k === "ArrowDown" || k === "KeyS") this.selSettings = (this.selSettings + 1) % (rows + 1);
-      else if (k === "ArrowLeft" || k === "ArrowRight" || k === "Enter" || k === "NumpadEnter" || k === "Space") {
-        this.cycleSetting(this.selSettings, k === "ArrowLeft" ? -1 : 1);
+      else if (k === "Enter" || k === "NumpadEnter" || k === "Space") {
+        if (this.selSettings >= rows) this.state = "menu";   // KEMBALI
+        else this.cycleSetting(this.selSettings, 1);
+      }
+      else if (k === "ArrowLeft" || k === "ArrowRight") {
+        if (this.selSettings < rows) this.cycleSetting(this.selSettings, k === "ArrowLeft" ? -1 : 1);
       }
       this.needRender = true;
     } else if (this.state === "about") {
@@ -1004,10 +1002,16 @@ class MenuApp {
   }
 
   cycleSetting(row, dir) {
-    if (row === 0) this.settings.mode = this.settings.mode === "assistant" ? "manual" : "assistant";
-    else if (row === 1) this.settings.fps = this.settings.fps === 30 ? 60 : 30;
-    else return;
-    setRenderFps(this.settings.fps);
+    if (row === 0) {
+      this.settings.mode = this.settings.mode === "assistant" ? "manual" : "assistant";
+    } else if (row === 1) {
+      // KECEPATAN: siklus pengali kecepatan basis (0.5x..1.5x)
+      const i = SPEEDS.indexOf(this.settings.speed);
+      this.settings.speed = SPEEDS[(i + (dir > 0 ? 1 : SPEEDS.length - 1)) % SPEEDS.length];
+    } else if (row === 2) {
+      this.settings.fps = this.settings.fps === 30 ? 60 : 30;
+      setRenderFps(this.settings.fps);
+    } else return;
     saveSettings(this.settings);
   }
 
@@ -1104,6 +1108,7 @@ class MenuApp {
       ctx.font = "18px 'DejaVu Sans Mono', Consolas, monospace";
       const rows = [
         ["MODE", this.settings.mode === "assistant" ? "ASSISTANT" : "KENDALI SENDIRI"],
+        ["KECEPATAN", this.settings.speed + "x"],
         ["RENDER FPS", String(this.settings.fps)],
       ];
       let y = 150;

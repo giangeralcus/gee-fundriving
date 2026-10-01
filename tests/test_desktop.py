@@ -1,6 +1,7 @@
 """Test suite desktop (pygame): jalankan dengan `py tests/test_desktop.py`.
 Pakai SDL dummy driver — jalan tanpa buka jendela."""
 import json
+import random
 import os
 import sys
 import tempfile
@@ -13,6 +14,11 @@ os.chdir(ROOT)
 
 import pygame
 import fundriving as fd
+
+# Suite fisika harus deterministik & offline: paksa scorer lokal
+# (check Jev ngatur env-nya sendiri; live API diuji via smoke/benchmark)
+os.environ.pop("JEV_API_URL", None)
+os.environ.pop("TYPESAFE_API_KEY", None)
 
 LOOP = os.path.join("maps", "loop_city.json")
 
@@ -69,14 +75,15 @@ assert opened["about"] == 1, opened
 print("PASS: menu -> SETTINGS/ABOUT terbuka -> EXIT")
 fd.settings_screen, fd.about_screen = real_settings_screen, real_about_screen
 
-# --- 5. settings: ubah mode/peta/fps, tersimpan ke file ---
-st = {"mode": "assistant", "map": "loop", "fps": 30}
+# --- 5. settings: ubah mode/peta/fps/kecepatan, tersimpan ke file ---
+st = {"mode": "assistant", "map": "loop", "fps": 30, "speed": 1.0}
 key(pygame.K_RIGHT)             # MODE -> KENDALI SENDIRI
 key(pygame.K_DOWN); key(pygame.K_RIGHT)   # PETA -> SIRKUIT
 key(pygame.K_DOWN); key(pygame.K_RIGHT)   # FPS -> 60
+key(pygame.K_DOWN); key(pygame.K_RIGHT)   # KECEPATAN -> 1.25x
 key(pygame.K_ESCAPE)
 fd.settings_screen(surf, clock, st)
-assert st == {"mode": "manual", "map": "circuit", "fps": 60}, st
+assert st == {"mode": "manual", "map": "circuit", "fps": 60, "speed": 1.25}, st
 assert fd.RENDER_FPS == 60 and fd.RENDER_EVERY == 1
 with open(fd.SETTINGS_PATH, encoding="utf-8") as f:
     assert json.load(f) == st, "file settings gak tersimpan"
@@ -91,7 +98,7 @@ print("PASS: settings ubah+persist+load ulang")
 with open(fd.SETTINGS_PATH, "w", encoding="utf-8") as f:
     json.dump({"mode": "ngasal", "map": "osm", "fps": 120}, f)
 st3 = fd.load_settings()
-assert st3 == {"mode": "assistant", "map": "loop", "fps": 30}, st3
+assert st3 == {"mode": "assistant", "map": "loop", "fps": 30, "speed": 1.0}, st3
 os.remove(fd.SETTINGS_PATH)
 print("PASS: load_settings validasi & fallback")
 
@@ -139,7 +146,24 @@ stats = fd.run_map(LOOP, False, 8, surf, clock, tempfile.mkdtemp(),
 assert stats["tempuh_m"] > 40, stats["tempuh_m"]
 print(f"PASS: mode assistant — tempuh {stats['tempuh_m']:.0f}m dalam 8s sim")
 pygame.quit()
-# --- 12. build_jev_body: request kandidat -> body SystemOne (murni, tanpa net) ---
+
+# --- 12. speed_scale: kecepatan basis 0.5x harus lebih lambat dari 1.0x ---
+def jalan(speed_scale):
+    random.seed(1234)  # misi + traffic identik: yang dibandingin cuma speed
+    pygame.init()
+    s = pygame.display.set_mode((fd.W, fd.H))
+    c = pygame.time.Clock()
+    st = fd.run_map(LOOP, False, 3, s, c, tempfile.mkdtemp(),
+                    record=False, auto_start=True, speed_scale=speed_scale)
+    pygame.quit()
+    return st["tempuh_m"]
+
+cepat = jalan(1.0)
+lambat = jalan(0.5)
+assert 0 < lambat < cepat, (lambat, cepat)
+print(f"PASS: speed_scale — 1.0x {cepat:.0f}m vs 0.5x {lambat:.0f}m dalam 3s")
+
+# --- 13. build_jev_body: request kandidat -> body SystemOne (murni, tanpa net) ---
 _req = {
     "speed": 8.0, "limit": 13.0, "destination_m": 500.0,
     "questions": {"vector": "pilih id kandidat fastest useful progress"},
@@ -159,7 +183,7 @@ assert set(_body["questions"]["vector"]["criteria"]) == {"v0", "stop"}
 assert "candidates" not in _body["state"] and _body["state"]["speed"] == 8.0
 print("PASS: build_jev_body shape SystemOne")
 
-# --- 13. remote_decide: tanpa key/URL -> None; URL mati -> None (fail soft) ---
+# --- 14. remote_decide: tanpa key/URL -> None; URL mati -> None (fail soft) ---
 _saved = {k: os.environ.get(k) for k in ("JEV_API_URL", "TYPESAFE_API_KEY")}
 for k in _saved:
     os.environ.pop(k, None)
@@ -173,7 +197,7 @@ for k, v in _saved.items():
         os.environ.pop(k, None)
 print("PASS: remote_decide fallback tanpa net")
 
-# --- 14. load_dotenv: parse .env, env asli menang ---
+# --- 15. load_dotenv: parse .env, env asli menang ---
 _tmp = os.path.join(tempfile.mkdtemp(), ".env")
 with open(_tmp, "w", encoding="utf-8") as f:
     f.write("# komen\n\nFD_TEST_A=1\nFD_TEST_B=\"dua kata\"\nFD_TEST_A=diabaikan\n")

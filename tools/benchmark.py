@@ -32,7 +32,7 @@ HIST = os.path.join("docs", "benchmark", "history.jsonl")
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seconds", type=int, default=240)
-    ap.add_argument("--brain", default="v4", help="v4 (planner) atau v3 (pure pursuit)")
+    ap.add_argument("--brain", default="v4", help="v4 (planner, Jev otomatis kalau key ada), v3 (pure pursuit), jev (Jev direct)")
     args = ap.parse_args()
 
     os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -65,7 +65,8 @@ def main():
                            record=False, brain=args.brain)
         r["arah"] = label
         jev = args.brain == "v4" and os.environ.get("TYPESAFE_API_KEY")
-        r["versi"] = ("v4-planner-jev" if jev else
+        r["versi"] = ("jev-direct" if args.brain == "jev" else
+                      "v4-planner-jev" if jev else
                       f"{args.brain}-planner" if args.brain == "v4" else "v3-purepursuit")
         results.append(r)
 
