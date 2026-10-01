@@ -16,7 +16,7 @@ const deg = (r) => (r * 180) / Math.PI;
 export const PLANNER_EVERY = 15;   // keputusan tiap 15 frame (4 Hz)
 export const ROLLOUT_STEPS = 90;   // horizon 1.5 detik @60fps
 export const CAND_SPEEDS = [1.0, 0.75, 0.5, 0.25];
-export const CAND_OFFSETS = [-3.0, 0.0, 2.0];
+export const CAND_OFFSETS = [-3.8, -2.0, 0.0, 2.0];   // kiri lebar: bisa nyalip
 export const IMMINENT_S = 0.5;     // kontak < 0.5 dtk = imminent
 export const OFF_ROAD_M = 11.0;    // fallback; normalnya dinamis (halfw + 2.2)
 export const STOP_BUF = 2.5;       // buffer berhenti di belakang lead/garis (m)
@@ -104,6 +104,7 @@ export async function decideCore(ctx, snap) {
     let tgtV = sf * maxv;
     let gx = x, gy = y, ghd = heading, v = speed;
     let trav = 0.0, offroad = 0, checked = 0, predTau = null, crossedRed = false;
+    let minClear = 1e9;   // jarak bersih terkecil ke ghost (DWA clearance)
     for (let i = 0; i < ROLLOUT_STEPS; i++) {
       let tgtEff = tgtV;
       // cap profil tikungan (ala routeSpeedLimit) + zona rambu + rem menuju lead/garis
@@ -151,11 +152,14 @@ export async function decideCore(ctx, snap) {
       if (distToRoad(segs, segGrid, gx, gy) > offRoadM) offroad++;
       const tau = i / FPS;
       if (predTau === null) {
-        // kontak dinilai di frame ghost (box bodi + margin, skala mobil 4.6m)
+        // kontak dinilai di frame ghost (box bodi + margin, ikut skala mobil);
+        // clearance: jarak euclidean dikurangi radius gabungan kasar
         const ca = Math.cos(a), sa = Math.sin(a);
         for (const p of snap.preds) {
           const dxo = p[0] + p[2] * tau - gx, dyo = p[1] + p[3] * tau - gy;
           const f = dxo * ca + dyo * sa, l = -dxo * sa + dyo * ca;
+          const clear = Math.hypot(dxo, dyo) - (halfF + halfW + 2.6);
+          if (clear < minClear) minClear = clear;
           if (-(halfF + 0.7) < f && f < halfF + 2.2 && Math.abs(l) < halfW + 1.45) { predTau = tau; break; }
         }
       }
@@ -174,6 +178,7 @@ export async function decideCore(ctx, snap) {
       predTau,
       imminent: predTau !== null && predTau < IMMINENT_S,
       predicted: predTau !== null,
+      clear: minClear,
       red: crossedRed,
       name: sf === 0 ? "Rem"
         : `${off < -1 ? "Kiri" : off > 1 ? "Kanan" : "Lurus"} ${sf.toFixed(2)}x`,
@@ -187,6 +192,9 @@ export async function decideCore(ctx, snap) {
     c.score = c.prog - 2.0 * c.laneErr - 0.03 * Math.abs(c.he)
       + 0.5 * c.speedEnd
       - 40.0 * c.offFrac
+      // DWA obstacle cost versi soft: mepet ghost itu MAHAL (walau gak
+      // kontak) — prefer jalur yang ngejar jarak, hindaran lahir dari sini
+      - 5.0 / Math.max(c.clear ?? 30, 0.5)
       - (c.imminent ? 900.0 : 0.0)
       - (c.predicted ? 800.0 + 60.0 / Math.max(0.2, c.predTau ?? 1.5) : 0.0)
       - 300.0 * (c.red ? 1 : 0);
