@@ -64,7 +64,9 @@ def main():
                            goal_coord=(b["lat"], b["lon"]),
                            record=False, brain=args.brain)
         r["arah"] = label
-        r["versi"] = f"{args.brain}-planner" if args.brain == "v4" else "v3-purepursuit"
+        jev = args.brain == "v4" and os.environ.get("TYPESAFE_API_KEY")
+        r["versi"] = ("v4-planner-jev" if jev else
+                      f"{args.brain}-planner" if args.brain == "v4" else "v3-purepursuit")
         results.append(r)
 
     os.makedirs(os.path.dirname(HIST), exist_ok=True)

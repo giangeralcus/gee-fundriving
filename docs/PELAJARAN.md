@@ -116,6 +116,28 @@ Diurut kira-kira sesuai urutan kejadian.
 
 ---
 
+## 13. Jev: model milih, kode yang mutusin aman
+
+- **Kejadian**: integrasi Jev SystemOne (2026-10-01) — payload cuma tabel
+  kandidat + konteks, Jev balas `{"choice": "v3"}`.
+- **Pelajaran** (pola JevPilot): model cuma milih dari kandidat yang sudah
+  difilter layak (moving set); **validasi pilihan tetap di kode** (pick harus
+  anggota pool, kalau bukan → scorer lokal yang jalan). Safety di kode, bukan
+  di model. Berlaku umum buat model-di-loop: jangan pernah percaya output
+  mentah — jadikan advisory di atas safety-net deterministik.
+
+## 14. Test sensitif isi working tree = bom waktu antar-checkout
+
+- **Kejadian**: check 6 (`load_settings` fallback) gagal padahal kode tak
+  berubah — karena `maps/puri_cengkareng.json` (gitignored, 27MB) ada di
+  checkout ini, jadi `"osm"` dianggap valid dan ekspektasi `"loop"` meleset.
+- **Pelajaran**: ekspektasi test yang tergantung file gitignored bakal beda
+  hasil di fresh clone vs checkout lama. Verifikasi pre-existing tanpa
+  melemahkan test: rename file aside → suite hijau → balikin. Jangan ubah
+  ekspektasi test buat ngejar hijau.
+
+---
+
 **Pola besar yang keulang**: (1) pisahkan logika murni dari I/O — bikin test,
 port, dan debugging jadi murah; (2) setiap klaim "udah bener" butuh ukuran
 (A/B seed, tick rate, skor); (3) environment (PATH, build ffmpeg, throttle

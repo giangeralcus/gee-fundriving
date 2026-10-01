@@ -37,6 +37,28 @@ RENDER_EVERY = FPS // RENDER_FPS   # fisika jalan tiap tick, render tiap N tick
 SETTINGS_PATH = os.path.join(os.path.expanduser("~"), "gee-fundriving", "settings.json")
 
 
+def load_dotenv(path=None):
+    """Muat .env repo-root ke os.environ (env asli menang, .env cuma fallback).
+    path opsional buat test. Tanpa dep: parse KEY=value manual."""
+    if path is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                k, v = k.strip(), v.strip().strip('"').strip("'")
+                if k and v and k not in os.environ:
+                    os.environ[k] = v
+    except OSError:
+        pass
+
+
+load_dotenv()
+
+
 def set_render_fps(n):
     """Ubah fps render dari menu SETTINGS (fisika tetap FPS)."""
     global RENDER_FPS, RENDER_EVERY
@@ -807,8 +829,9 @@ def driver_controls(pressed):
 # kandidat maneuver -> rollout proyeksi fisika -> tag (on-road, tabrak,
 # merah) -> filter + skor lokal -> pilih satu. Maneuver (offset lajur +
 # target speed) dieksekusi antar keputusan ~4 Hz. Hook LLM: build_request()
-# merangkum state jadi tabel ringkas; set JEV_API_URL biar model eksternal
-# yang milih kandidat (balas {"choice": "v3"}), gagal/tak ada -> skor lokal.
+# merangkum state jadi tabel ringkas; set TYPESAFE_API_KEY (env/.env) biar Jev
+# asli yang milih kandidat, atau JEV_API_URL buat endpoint custom. Gagal/tak
+# ada -> skor lokal.
 
 PLANNER_EVERY = 15          # keputusan tiap 15 frame (4 Hz, ala decisionInterval)
 ROLLOUT_STEPS = 90          # horizon 1.5 detik @60fps
@@ -862,22 +885,71 @@ def dist_to_road(world, x, y):
     return best
 
 
-def remote_decide(request):
-    """Hook brain eksternal (roadmap: Jev API asli). Endpoint kompatibel:
-    POST JSON request -> balas {"choice": "v5"} / {"choice": "stop"}.
-    Gak diset / gagal / timeout -> balik None, scorer lokal yang mutusin."""
-    url = os.environ.get("JEV_API_URL")
-    if not url:
+JEV_API = "https://api.typesafe.ai/v1/systemone"
+JEV_MODEL = "jev-latest"
+
+
+def build_jev_body(request):
+    """Request kandidat ringkas -> body SystemOne: state konteks + satu
+    pertanyaan Choice 'vector' (criteria = kandidat). Murni fungsi."""
+    state = {k: v for k, v in request.items()
+             if k not in ("candidates", "questions")}
+    criteria = {}
+    for cid, c in request["candidates"].items():
+        tag = ["on-road" if c["on_road"] else "OFF-ROAD",
+               "tabrak %.1fs" % c["collision_in_s"] if c["collision_in_s"] else "aman"]
+        if c["crosses_red"]:
+            tag.append("NYEBRANG MERAH")
+        criteria[cid] = ("%s: maju %.0fm, lajur-err %.0fm, v_akhir %.1f (%s)"
+                         % (c["name"], c["progress_m"], c["lane_error_m"],
+                            c["end_speed"], ", ".join(tag)))
+    return {"model": JEV_MODEL, "state": state,
+            "questions": {"vector": {
+                "type": "choice",
+                "instructions": ("Pilih SATU id kandidat buat mobil otonom 1.5 detik ke depan. "
+                                 "Utamakan: jangan tabrak, jangan off-road, jangan nyebrang merah; "
+                                 "kalau semua bahaya pilih stop. "
+                                 "Selain itu pilih fastest useful progress."),
+                "criteria": criteria}}}
+
+
+def jev_decide(request):
+    """Panggil Jev SystemOne asli (butuh TYPESAFE_API_KEY di env/.env).
+    Balik {"choice", "src", "confidence"} atau None kalau gagal/timeout."""
+    key = os.environ.get("TYPESAFE_API_KEY")
+    if not key:
         return None
     try:
         import urllib.request
         req = urllib.request.Request(
-            url, data=json.dumps(request).encode(),
-            headers={"Content-Type": "application/json"})
+            JEV_API, data=json.dumps(build_jev_body(request)).encode(),
+            headers={"Content-Type": "application/json",
+                     "Authorization": "Bearer " + key})
         with urllib.request.urlopen(req, timeout=2.0) as r:
-            return json.loads(r.read().decode())
+            ans = json.loads(r.read().decode())["answers"]["vector"]
+        if ans.get("type") == "choice" and isinstance(ans.get("choice"), str):
+            return {"choice": ans["choice"], "src": "jev",
+                    "confidence": ans.get("confidence")}
     except Exception:
-        return None
+        pass
+    return None
+
+
+def remote_decide(request):
+    """Hook brain eksternal. Prioritas: JEV_API_URL (endpoint custom, kompatibel
+    lama) -> Jev SystemOne asli (TYPESAFE_API_KEY) -> None (scorer lokal)."""
+    url = os.environ.get("JEV_API_URL")
+    if url:
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                url, data=json.dumps(request).encode(),
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=2.0) as r:
+                return json.loads(r.read().decode())
+        except Exception:
+            return None
+    return jev_decide(request)
 
 
 class Planner:

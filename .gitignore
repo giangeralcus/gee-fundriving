@@ -1,3 +1,7 @@
+# secrets lokal (JANGAN commit): tiap user isi key sendiri
+.env
+.env.*
+!.env.example
 # window/canvas scaling
 *.pyc
 __pycache__/

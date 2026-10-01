@@ -81,7 +81,7 @@ python fundriving.py --map loop --headless --seconds 60
 
 Fitur map mode:
 - **Self-driving v4 (default)**: candidate sampling ala [JevPilot](https://github.com/standardagents/jevpilot) — 13 kandidat maneuver (4 target speed × 3 offset lajur + rem) di-rollout 1,5 detik tiap 4 Hz pakai fisika yang sama dgn mobil, di-tag (off-road, kontak AI + timing, nyebrang merah), difilter ala moving set, lalu diskor lokal. Maneuver menang dieksekusi antar keputusan via pure pursuit. Endpoint kandidat + maneuver terpilih kelihatan langsung di peta
-- **Hook brain eksternal**: set `JEV_API_URL` (POST payload tabel kandidat ringkas, balas `{"choice": "v3"}`) biar model luar yang milih; gagal/time-out otomatis balik ke scorer lokal. HUD nampilin sumber keputusan (`[jev]` / `[lokal]`)
+- **Brain Jev asli**: isi `TYPESAFE_API_KEY` di `.env` (copy dari `.env.example`, BYOK — file `.env` jangan di-commit) biar Jev SystemOne yang milih kandidat tiap 4 Hz; gagal/time-out otomatis balik ke scorer lokal. Alternatif endpoint custom: `JEV_API_URL` (POST payload tabel kandidat, balas `{"choice": "v3"}`). HUD nampilin sumber keputusan (`[jev]` / `[lokal]`)
 - **Fallback `--brain v3`**: pure pursuit (target selalu di atas rute), progresi proyeksi segmen, raut rute Douglas-Peucker (bunuh zigzag dual-carriageway), antisipasi tikungan (rem curvature, slow-in fast-out), ACC proporsional searah (lawan arah bukan rintangan), anti-stall, safety-net snap kalau keluar > 35m
 - **Anti-deadlock dua tier**: breaker lama (gap < 15m, 4 detik) + tier baru (diam total 8 detik apa pun gapnya — standoff lawan arah)
 - **Lajur kanan**: mobil jalan di lajur kanan (bukan tengah jalan), AI deteksi mobil lu sebagai rintangan
@@ -94,9 +94,11 @@ Fitur map mode:
 - **Bisa dikendarai sendiri**: tekan `F` untuk lepas dari assistant dan kemudikan mobil pakai `WASD`/arrow (`W`/`↑` gas, `S`/`↓` rem, `A`/`D` belok — kemudi di-smooth biar gak jerk). Tekan `F` lagi buat balik ke autopilot. Mulai langsung dari kemudi: `--manual`. Di mode manual kamu yang nyabrang lampu merah (denda tetap masuk) dan nggak ada snap balik ke rute
 - **Kamera follow** + zoom `[-][=]`, `R` misi baru, `F` assistant ON/OFF, `ESC` keluar, FPS live di HUD; render 30fps (fisika tetap 60Hz), rekaman MP4 headless 30fps real-time
 
-Benchmark learning curve: `python tools/benchmark.py` (dua arah Green Sedayu ↔ Puri Indah di peta OSM, atau misi acak di Loop City; pilih brain dengan `--brain v4|v3`) — hasil tercatat di `docs/benchmark/history.jsonl`.
+Benchmark learning curve: `python tools/benchmark.py` (dua arah Green Sedayu ↔ Puri Indah di peta OSM, atau misi acak di Loop City; pilih brain dengan `--brain v4|v3`) — hasil tercatat di `docs/benchmark/history.jsonl`. Varian Jev: isi `TYPESAFE_API_KEY` dulu lalu jalanin perintah yang sama — run Jev tercatat sebagai `v4-planner-jev`, tanpa key tercatat `v4-planner` (scorer lokal).
 
 Terakhir (2026-09-18, peta OSM dua arah): v4 selesai dua-duanya, skor 1003 & 962, 0 tabrak — setara v3 (1005 & 962) dengan offroad lebih bersih di arah pertama (2.1% vs 4.0%).
+
+Terakhir (2026-10-01, OSM dua arah): v4-jev imbang v4-lokal (1003 & 962, 0 tabrak), offroad lebih bersih di arah pertama (1.0% vs 2.1%). Jev terbukti nyetir beneran: trayeknya beda dari run lokal yang deterministik. Latensi Jev ~0.4 dtk/putusan (di atas budget 4 Hz) — oke buat headless/benchmark, tapi butuh planner async biar mulus di mode windowed.
 
 Tambah peta daerah lain: ubah koordinat bbox di `tools/fetch_osm.py` atau pakai `--bbox`.
 
@@ -144,7 +146,8 @@ docs/demo.png    # screenshot gameplay
 
 - [ ] Mode sedang: mobil + motor, obstacle acak, traffic
 - [ ] Multi-agent + leaderboard
-- [x] Hook brain eksternal: `JEV_API_URL` / `?jev=` (payload tabel kandidat ala JevPilot) — tinggal arahkan ke Jev API asli kalau udah terbuka
+- [x] Brain Jev asli (desktop): `TYPESAFE_API_KEY` via env/`.env` (payload tabel kandidat ala JevPilot, fallback lokal otomatis)
+- [ ] Brain Jev asli (web): kolom key di Settings — saat ini web cuma support `?jev=` endpoint custom
 - [x] Port web 3D ala JevPilot: Vite + Three.js, worker planner, deploy Cloudflare Pages
 - [ ] Brain generational (evolution) buat belajar hindar
 
