@@ -316,7 +316,8 @@ export class UI {
       this.lastMissions = m.n;
       const pts = m.score;
       $("arrival-summary").textContent =
-        `${Math.round(m.routeLen)} m ditempuh dalam ${Math.round(m.driven)} m perjalanan — skor misi +${Math.max(0, pts - (this._prevScore || 0))}, total ${pts}.`;
+        `${Math.round(m.routeLen)} m ditempuh dalam ${Math.round(m.driven)} m perjalanan — skor misi +${Math.max(0, pts - (this._prevScore || 0))}, total ${pts}.`
+        + (m.lastParked ? " 🅿️ Terparkir rapi." : "");
       this._prevScore = pts;
       $("arrival").hidden = false;
       clearTimeout(this._arrT);

@@ -325,6 +325,13 @@ export class Planner {
       const a = rad(tc.heading);
       return [tc.x, tc.y, Math.cos(a) * tc.speed, Math.sin(a) * tc.speed];
     });
+    // mobil parkir: obstacle statis (velocity 0) — kandidat yang nyenggol
+    // ditolak rollout
+    if (this.parked) {
+      for (const pc of this.parked.near(car.x, car.y, 130)) {
+        preds.push([pc.x, pc.y, 0, 0]);
+      }
+    }
     return {
       s0: this.s,
       x: car.x, y: car.y, heading: car.heading, speed: car.speed,

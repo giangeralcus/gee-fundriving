@@ -47,7 +47,7 @@ function paint(geo, hex) {
 }
 
 export class Scene3D {
-  constructor(container, world, heroSpec = null, signs = null) {
+  constructor(container, world, heroSpec = null, signs = null, parked = null) {
     this.world = world;
     this.heroSpec = heroSpec;
     this.renderer = new THREE.WebGLRenderer({
@@ -71,6 +71,7 @@ export class Scene3D {
     this._buildStatic();
     this._buildDynamic();
     if (signs) this._buildSigns(signs);
+    if (parked) this._buildParked(parked);
     window.addEventListener("resize", () => {
       this.renderer.setSize(container.clientWidth, container.clientHeight);
       this.camera.aspect = container.clientWidth / container.clientHeight;
@@ -415,6 +416,35 @@ export class Scene3D {
   }
 
   // sinkron dunia 3D dgn state sim; dipanggil tiap frame
+  // mobil parkir (obstacle statis) + garis bay kosong (marka putih aspal)
+  _buildParked(parked) {
+    const g = new THREE.Group();
+    for (const c of parked.cars) {
+      const mesh = this._mkCar(c.color, c.len, c.wid, false);
+      mesh.position.set(c.x, 0, c.y);
+      mesh.rotation.y = -c.ang;
+      g.add(mesh);
+    }
+    const lineMat = new THREE.MeshBasicMaterial({ color: 0xe8eaee });
+    for (const b of parked.bays) {
+      if (b.occupied) continue;
+      const bg = new THREE.Group();
+      bg.position.set(b.cx, 0, b.cy);
+      bg.rotation.y = -b.ang;
+      const side = new THREE.BoxGeometry(b.len, 0.03, 0.12);
+      for (const s of [-1, 1]) {
+        const ln = new THREE.Mesh(side, lineMat);
+        ln.position.set(0, 0.05, s * 1.15);
+        bg.add(ln);
+      }
+      const cap = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.03, 2.3), lineMat);
+      cap.position.set(-b.len / 2 + 0.06, 0.05, 0);
+      bg.add(cap);
+      g.add(bg);
+    }
+    this.scene.add(g);
+  }
+
   // rambu jalan: STOP (oktagon merah) + batas kecepatan (lingkaran putih
   // ring merah + angka). Dipasang di kanan pendekat, di luar tepi aspal.
   _buildSigns(signs) {

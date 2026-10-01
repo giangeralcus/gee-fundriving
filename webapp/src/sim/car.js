@@ -44,6 +44,7 @@ export class MapCar {
     this.ACC = vehicle.acc * speedScale;
     this.BRAKE = vehicle.brake;
     this.delta = 0.0;    // sudut kemudi roda depan saat ini (rad)
+    this.gear = 1;       // 1 maju, -1 mundur (parkir otonom butuh R)
     this.speed = 0.0;    // m/s
     const [x, y] = world.nodes.get(startNode);
     this.x = x; this.y = y;
@@ -79,6 +80,7 @@ export class MapCar {
   // ±½ lebar arah), mobil di tengah lajur kanan yang dekat garis tengah
   // (25% halfwidth dari garis tengah)
   get laneOff() {
+    if (this.laneOffLock != null) return this.laneOffLock;   // parkir: ikut jalur persis
     return this.world.nearestSegW(this.x, this.y) * 0.25;
   }
 
@@ -198,6 +200,11 @@ export class MapCar {
     };
   }
 
+  _toward(v, target, step) {
+    const d = target - v;
+    return Math.abs(d) <= step ? target : v + Math.sign(d) * step;
+  }
+
   step(steer, thr, brk) {
     // MODEL SEPEDA KINEMATIK: sudut roda depan dikejar ke target dengan
     // rate-limit (halus, gak snap), yaw lahir dari geometri kendaraan:
@@ -209,8 +216,11 @@ export class MapCar {
     this.delta += dDelta;
     const yawRate = (this.speed / this.wheelbase) * Math.tan(this.delta);
     this.heading = wrapDeg(this.heading + (yawRate / DEG) * DT);
-    if (brk > 0) this.speed = Math.max(0.0, this.speed - this.BRAKE * brk * DT);
-    else if (thr > 0) this.speed = Math.min(this.MAXV, this.speed + this.ACC * thr * DT);
+    // gear mundur: target kecepatan negatif (maks 40% kecepatan maju);
+    // model sepeda yang sama bikin mundur otomatis steer kebalik — fisik beneran
+    const tgtSpeed = this.gear < 0 ? -this.MAXV * 0.4 : this.MAXV;
+    if (brk > 0) this.speed = this._toward(this.speed, 0.0, this.BRAKE * brk * DT);
+    else if (thr > 0) this.speed = this._toward(this.speed, tgtSpeed, this.ACC * thr * DT);
     const a = (this.heading * Math.PI) / 180;
     this.x += Math.cos(a) * this.speed * DT;
     this.y += Math.sin(a) * this.speed * DT;

@@ -54,6 +54,7 @@ addEventListener("keydown", (ev) => {
   if (ev.code === "KeyP" && view) togglePause();
   if (ev.code === "Escape") togglePause();
   if (ev.code === "KeyR" && sim) newMission();
+  if (ev.code === "KeyK" && sim) startParkingManual();
   if (ev.code === "KeyT") {
     turbo = turbo === 1 ? 2 : turbo === 2 ? 4 : 1;
     ui?.toast(`turbo ${turbo}×`);
@@ -137,6 +138,15 @@ function clearVia() {
   const near = sim.world.nearestNode(sim.car.x, sim.car.y, sim.comp);
   sim.mission.new(near, sim.car);
   ui?.toast("Waypoint dihapus — misi baru");
+}
+
+// parkir otopilot manual [K]: nyari bay kosong terdekat & parkir di sana
+function startParkingManual() {
+  if (!sim || sim.mission.parking) return;
+  const bay = sim.parked?.nearestFreeBay(sim.car.x, sim.car.y, sim.car.len + 1.6, 260);
+  if (!bay) { ui?.toast("Gak ada bay parkir kosong di dekat sini"); return; }
+  if (sim.mission.startParking(sim.car, bay)) ui?.toast("Parkir otopilot — nyari slot…");
+  else ui?.toast("Gak bisa route ke parkiran");
 }
 
 function manualControls() {

@@ -218,3 +218,31 @@ browser) lebih sering jadi penyebab daripada algoritmanya.
   butuh fallback biar tetap terlihat. Mobil AI juga harus hormat rambu yang
   sama (crawl masuk simpang STOP) — kalau cuma hero yang nurut, hero berhenti
   jadi sasaran serudukan AI di belakang.
+
+## 21. Referensi dari repo orang lain: ambil formulanya, gak ambil mentah-mentahnya
+
+- **Kejadian** (2026-10-01): fitur parkir otonom + rambu. Riset langsung ke
+  sumber: PythonRobotics (AtsushiSakai) — Stanley (``delta = theta_e +
+  atan2(k*e, v)``, dipakai buat servo parkir low-speed), MPCC bicycle model
+  (``MAX_DSTEER = 30°/s`` memvalidasi rate-limit kemudi), pure pursuit
+  (Coulter 1992, sudah dipakai). Wikipedia "Parallel parking" DICEK langsung
+  ternyata GAK punya bagian matematis — jadi geometri maneuver disusun dari
+  fisika sendiri (keyframe servo + fisika model sepeda), bukan kutipan ngasal.
+- **Pelajaran**: adoptasi referensi itu tiga langkah: (1) ambil formula DARI
+  SUMBER ASLINYA (raw GitHub, bukan ingatan), (2) petakan ke kontrak kode
+  kita (Steer normalized [-1,1], DT 1/60), (3) buktikan lewat benchmark —
+  bukan "udah mirip". Yang gak ketemu sumbernya (geometri parkir), tulis
+  turunannya sendiri dan-catat di sini.
+
+## 22. Rem antisipatif: jangkar fisika, bukan angka ajaib
+
+- **Kejadian**: mobil gak berhenti di rambu STOP — rem baru engage di 9m
+  padahal dari 11 m/s butuh 8,1m (v²/2b). Diperbaiki pakai jangkar fisika
+  ``brakeDist = v²/(2·BRAKE) + margin`` dengan FLOOR minimum (3,5m) — versi
+  tanpa floor malah osilasi: brakeDist menyusut saat mobil melambat → rem
+  lepas → gas lagi, berulang di ~4 m/s.
+- **Pelajaran**: logika kendali berbasis jarak harus dijangkar ke fisika
+  pengereman (stopping distance), dan ADA batas bawah — tanpa floor, sistem
+  menemukan titik ekuilibrium "nyaris berhenti selamanya". Deteksi zona juga
+  harus menjangkau 0m (stopAhead lama mulai dari 3m — penalti nabrak rambu
+  gak pernah kepicu karena mobil lewat di bawah 3m).

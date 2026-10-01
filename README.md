@@ -15,10 +15,14 @@ tersimpan di `localStorage` (mode otopilot/manual, kecepatan basis 0.5–1.5×,
 ala "add stop"** (klik minimap = rute lewat situ, shift+klik hapus terakhir,
 🚩✕ bersihkan), **rambu jalan** (STOP deterministik + zona batas kecepatan 25
 km/j — autopilot nurut, HUD LIMIT ikut berubah; langgar STOP = penalti),
-navigation card (belokan berikutnya + sisa jarak), minimap ber-route, driver
-dock (speed + LIMIT + tombol otopilot), inspector JSON live 4 Hz (payload
-planner + respons), dialog sampai-tujuan & game-over, touch thumbstick,
-loading screen, dan dunia siang bermarka. Gerakan mobil pakai **model sepeda
+**parkiran tepi jalan** (mobil parkir = obstacle; slot kosong = target),
+**parkir otonom** (auto-park di tujuan atau tekan `[K]`: servo masuk bay,
+goyangan mundur-maju ala parkir beneran — mobil punya gear R — lalu rem
+rapat; dialog sampai-tujuan nampilin 🅿️), navigation card (belokan
+berikutnya + sisa jarak), minimap ber-route, driver dock (speed + LIMIT +
+tombol otopilot), inspector JSON live 4 Hz (payload planner + respons),
+dialog sampai-tujuan & game-over, touch thumbstick, loading screen, dan
+dunia siang bermarka. Gerakan mobil pakai **model sepeda
 kinematik** (yaw = v·tan(delta)/wheelbase, sudut roda di-rate-limit) — belokan
 halus dan otomatis ikut skala kendaraan (bus radius putarnya lebar). Planner
 jalan di web worker. Live: **https://gee-fundriving.pages.dev**
@@ -34,10 +38,12 @@ npm run build      # dist/ — deploy: npx wrangler pages deploy dist
 ```
 
 Keys: `[J]` otopilot on/off, `[WASD/panah/space]` manual, `[C]` kamera
-Chase/Driver/Top, `[P]`/`[ESC]` pause, `[R]` misi baru, `{ }` inspector JSON.
+Chase/Driver/Top, `[P]`/`[ESC]` pause, `[R]` misi baru, `[K]` parkir otopilot,
+`{ }` inspector JSON.
 Param URL: `?brain=v3` (brain lama), `?jev=https://...` (hook LLM eksternal),
 `?traffic=1`, `?map=/file.json`.
-Smoke test headless (Node, tanpa browser): `node tools/benchmark.mjs --brain v4`.
+Smoke test headless (Node, tanpa browser): `node tools/benchmark.mjs --brain v4
+--seconds 300` (default 240s kekecilan buat misi panjang + rambu STOP).
 
 ## Loop City (default, peta internal — instan & gampang diadaptasi)
 

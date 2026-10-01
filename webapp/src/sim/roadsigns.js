@@ -108,7 +108,7 @@ export class RoadSigns {
     for (let i = 0; i < this.stops.length; i++) {
       const dx = this.stops[i][0] - x, dy = this.stops[i][1] - y;
       const fwd = dx * fx + dy * fy;
-      if (!(3 < fwd && fwd < 20)) continue;
+      if (!(0.5 < fwd && fwd < 20)) continue;
       const lat = Math.abs(-dx * fy + dy * fx);
       if (lat > 5) continue;
       if (best === null || fwd < best) { best = fwd; bi = i; }

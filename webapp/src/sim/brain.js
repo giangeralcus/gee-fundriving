@@ -16,6 +16,9 @@ export function mapBrain(state) {
   else if (sharp > 15) tgt = Math.min(tgt, 8);
   // steer: pure pursuit curvature (konsisten model sepeda); fallback he/40
   const steer = state.ppSteer ?? Math.max(-1.0, Math.min(1.0, he / 40.0));
+  // mobil parkir di koridor kanan → bias geser kiri (makin dekat makin kenceng)
+  const avoid = state.parkAhead != null ? 0.38 * Math.max(0, 1 - state.parkAhead / 30) : 0;
+  const steerOut = Math.max(-1, Math.min(1, steer - avoid));
   let thr = 0, brk = 0;
   if (v > tgt + 0.6) brk = 1;
   else if (v < tgt - 0.4) thr = 1;
@@ -28,5 +31,5 @@ export function mapBrain(state) {
   }
   // anti-stall: nyaris berhenti tanpa rintangan -> kasi gas
   if (v < 0.3 && gap == null && tgt > 1) { thr = 0.6; brk = 0; }
-  return [steer, thr, brk, { he, lat: state.lateral, acc }];
+  return [steerOut, thr, brk, { he, lat: state.lateral, acc }];
 }
