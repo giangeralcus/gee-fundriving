@@ -6,22 +6,6 @@ Simulasi nyetir 2D top-down: **1 mobil autonomous** keliling sirkuit dengan *Sys
 
 ![gameplay](docs/demo.png)
 
-## Versi web ringan (2D Canvas — port jalur desktop)
-
-```bash
-# cara 1: buka langsung (offline, tanpa server)
-web/index.html                      # dobel-klik
-
-# cara 2: server lokal
-cd web && python -m http.server 8123   # -> http://localhost:8123/
-```
-
-Port JavaScript + Canvas dari versi desktop: fisika 60Hz fixed-step, render
-30/60fps, menu START/SETTINGS/ABOUT/EXIT (setelan di localStorage), assistant
-pure pursuit + ACC + lampu merah, traffic AI, mode misi, dan kendali manual
-(WASD/arrow + `F` ambil-alih). Peta Loop City di-embed (`map_loop_city.js`).
-Tes: `node web/test_headless.js` (logika: mobil jalan, misi selesai).
-
 ## Versi web 3D (ala JevPilot) — jalan di browser
 
 Port setia ke **Vite + Three.js** dengan UI ala [JevPilot](https://jevpilot.standardagents.ai):
