@@ -208,4 +208,47 @@ assert os.environ.get("FD_TEST_B") == "env-menang", os.environ.get("FD_TEST_B")
 del os.environ["FD_TEST_B"]
 os.remove(_tmp)
 print("PASS: load_dotenv parse + prioritas env")
+# --- 16. get/save_api_key: tulis .env tmp, baris lain utuh, env menang ---
+_kp = os.path.join(tempfile.mkdtemp(), ".env")
+with open(_kp, "w", encoding="utf-8") as f:
+    f.write("# komen\nLAIN=1\n")
+assert fd.get_api_key(_kp) == ""
+fd.save_api_key("key123", _kp)
+assert fd.get_api_key(_kp) == "key123"
+assert os.environ.get("TYPESAFE_API_KEY") == "key123"
+with open(_kp, encoding="utf-8") as f:
+    _kt = f.read()
+assert "LAIN=1" in _kt and _kt.count("TYPESAFE_API_KEY=") == 1, _kt
+fd.save_api_key("key456", _kp)  # update: tetap 1 baris key
+with open(_kp, encoding="utf-8") as f:
+    assert f.read().count("TYPESAFE_API_KEY=") == 1
+os.environ["TYPESAFE_API_KEY"] = "env-menang"
+assert fd.get_api_key(_kp) == "env-menang"  # env menang atas file
+fd.save_api_key("", _kp)  # hapus key
+assert fd.get_api_key(_kp) == "" and "TYPESAFE_API_KEY" not in os.environ
+with open(_kp, encoding="utf-8") as f:
+    _kt = f.read()
+assert "TYPESAFE_API_KEY" not in _kt and "LAIN=1" in _kt, _kt
+os.remove(_kp)
+print("PASS: get/save_api_key tulis + prioritas + hapus")
+
+# --- 17. api_key_screen: ketik + BACKSPACE + ENTER simpan; kosong hapus ---
+_sp = os.path.join(tempfile.mkdtemp(), ".env")
+pygame.init()
+_ss = pygame.display.set_mode((fd.W, fd.H))
+_sc = pygame.time.Clock()
+for _ch in "key123":
+    pygame.event.post(pygame.event.Event(
+        pygame.KEYDOWN, {"key": ord(_ch), "unicode": _ch, "mod": 0}))
+pygame.event.post(pygame.event.Event(
+    pygame.KEYDOWN, {"key": pygame.K_BACKSPACE, "mod": 0}))
+key(pygame.K_RETURN)
+fd.api_key_screen(_ss, _sc, _sp)
+assert fd.get_api_key(_sp) == "key12", fd.get_api_key(_sp)
+key(pygame.K_RETURN)  # buf kosong + ENTER = hapus
+fd.api_key_screen(_ss, _sc, _sp)
+assert fd.get_api_key(_sp) == ""
+os.remove(_sp)
+pygame.quit()
+print("PASS: api_key_screen ketik + simpan + hapus")
 print("SEMUA PASS")

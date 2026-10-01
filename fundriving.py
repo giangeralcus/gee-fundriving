@@ -60,6 +60,61 @@ def load_dotenv(path=None):
 load_dotenv()
 
 
+def default_dotenv():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+
+
+def get_api_key(path=None):
+    """Key TypeSafe efektif: env dulu, lalu file .env. '' kalau kosong."""
+    v = os.environ.get("TYPESAFE_API_KEY", "").strip()
+    if v:
+        return v
+    try:
+        with open(path or default_dotenv(), encoding="utf-8") as f:
+            for line in f:
+                if line.strip().startswith("TYPESAFE_API_KEY="):
+                    return line.strip().split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return ""
+
+
+def save_api_key(key, path=None):
+    """Simpan/hapus key: tulis .env (baris lain dipertahankan) + update environ
+    biar langsung berlaku tanpa restart. Balik key yang tersimpan ('' = hapus)."""
+    p = path or default_dotenv()
+    key = (key or "").strip().strip('"').strip("'")
+    try:
+        with open(p, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        lines = []
+    kept = [l for l in lines if not l.strip().startswith("TYPESAFE_API_KEY=")]
+    if key:
+        kept.append("TYPESAFE_API_KEY=" + key)
+    with open(p, "w", encoding="utf-8") as f:
+        f.write("\n".join(kept) + ("\n" if kept else ""))
+    if key:
+        os.environ["TYPESAFE_API_KEY"] = key
+    else:
+        os.environ.pop("TYPESAFE_API_KEY", None)
+    return key
+
+
+def _clipboard_text():
+    """Ambil teks clipboard (Ctrl+V). Gagal / tak support -> ''."""
+    try:
+        from pygame import scrap
+        scrap.init()
+        if hasattr(scrap, "get_text"):
+            t = scrap.get_text()
+            return t.strip() if isinstance(t, str) else ""
+        raw = scrap.get(scrap.SCRAP_TEXT)
+        return raw.decode("utf-8", "ignore").strip("\x00 \r\n") if raw else ""
+    except Exception:
+        return ""
+
+
 def set_render_fps(n):
     """Ubah fps render dari menu SETTINGS (fisika tetap FPS)."""
     global RENDER_FPS, RENDER_EVERY
@@ -1895,8 +1950,53 @@ def about_screen(surf, clock):
         clock.tick(RENDER_FPS)
 
 
+def api_key_screen(surf, clock, path=None):
+    """Layar API KEY: input key TypeSafe (Jev) buat testing nyetir pinter.
+    Ketik / Ctrl+V tempel, ENTER simpan (kosong = hapus key), ESC batal.
+    Key selalu dimasking di layar; tersimpan di .env (gitignored)."""
+    big = pygame.font.SysFont("dejavusansbold", 40)
+    font = pygame.font.SysFont("dejavusansmono", 18)
+    small = pygame.font.SysFont("dejavusansmono", 14)
+    buf = ""
+    while True:
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                return
+            if ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_ESCAPE:
+                    return
+                if ev.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                    save_api_key(buf, path)
+                    return
+                if ev.key == pygame.K_BACKSPACE:
+                    buf = buf[:-1]
+                elif ev.key == pygame.K_v and (getattr(ev, "mod", 0) & pygame.KMOD_CTRL):
+                    buf = (buf + _clipboard_text())[:200]
+                elif getattr(ev, "unicode", "") and ev.unicode.isprintable() \
+                        and len(buf) < 200:
+                    buf += ev.unicode
+        cur = get_api_key(path)
+        status = ("TERISI  ****" + cur[-4:]) if cur else "BELUM ADA — game pakai scorer lokal"
+        surf.fill((24, 26, 32))
+        t = big.render("API KEY (Jev)", True, (240, 240, 240))
+        surf.blit(t, (W // 2 - t.get_width() // 2, 60))
+        surf.blit(font.render("status: " + status, True, (120, 220, 140) if cur else (220, 170, 120)),
+                  (120, 150))
+        box = pygame.Rect(120, 200, W - 240, 44)
+        pygame.draw.rect(surf, (10, 12, 16), box)
+        pygame.draw.rect(surf, (90, 200, 120), box, 2)
+        shown = "*" * len(buf) + "_"
+        surf.blit(font.render(shown[-52:], True, (240, 240, 240)), (132, 213))
+        for i, hint in enumerate([
+                "ketik key / Ctrl+V tempel  ·  ENTER simpan  ·  kosong+ENTER hapus  ·  ESC batal",
+                "tanpa key = scorer lokal. alternatif: isi manual file .env (jangan commit!)"]):
+            surf.blit(small.render(hint, True, (120, 125, 140)), (120, 270 + i * 24))
+        pygame.display.flip()
+        clock.tick(RENDER_FPS)
+
+
 def main_menu(surf, clock, settings):
-    """Menu utama: START / SETTINGS / ABOUT / EXIT.
+    """Menu utama: START / SETTINGS / ABOUT / API KEY / EXIT.
     START -> {'mapfile', 'auto_start'}; EXIT/ESC -> None.
     SETTINGS & ABOUT ditangani di sini, balik ke menu lagi."""
     big = pygame.font.SysFont("dejavusansbold", 46)
@@ -1916,9 +2016,11 @@ def main_menu(surf, clock, settings):
     while True:
         mode_lbl = "ASSISTANT" if settings["mode"] == "assistant" else "KENDALI SENDIRI"
         map_lbl = {"loop": "LOOP CITY", "circuit": "SIRKUIT", "osm": "PETA OSM"}[settings["map"]]
+        api_lbl = "TERISI" if get_api_key() else "BELUM ADA"
         items = [("START  —  {} · {}".format(mode_lbl, map_lbl), "start"),
                  ("SETTINGS", "settings"),
                  ("ABOUT", "about"),
+                 ("API KEY  —  " + api_lbl, "apikey"),
                  ("EXIT", "exit")]
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
@@ -1939,6 +2041,8 @@ def main_menu(surf, clock, settings):
                         settings_screen(surf, clock, settings)
                     elif act == "about":
                         about_screen(surf, clock)
+                    elif act == "apikey":
+                        api_key_screen(surf, clock)
                     else:
                         return None
 
