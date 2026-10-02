@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate Loop City — peta internal Gee-FunDriving yang gampang diadaptasi.
+"""Generate Loop City — peta internal GG-FunDriving yang gampang diadaptasi.
 
 Ring jalan besar (rounded rectangle) + jalan cross (biar ada simpang lampu)
 + bangunan + area hijau. Output: maps/loop_city.json (format sama dgn OSM).

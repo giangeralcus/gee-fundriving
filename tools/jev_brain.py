@@ -1,4 +1,4 @@
-"""Otak Jev live buat Gee-FunDriving (TypeSafe System One).
+"""Otak Jev live buat GG-FunDriving (TypeSafe System One).
 
 Pola sesuai skill typesafe-ai: kode pegang workflow + eksekusi halus,
 Jev cuma kasih judgment terstruktur (Choice maneuver + Noul rem darurat).

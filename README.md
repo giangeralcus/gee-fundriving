@@ -1,8 +1,8 @@
-# Gee-FunDriving 🚗💨
+# GG-FunDriving 🚗💨
 
 Simulasi nyetir 2D top-down: **1 mobil autonomous** keliling sirkuit dengan *System-One decision loop* — inspirasi dari [demo "rebuilt Tesla FSD with Jev"](https://x.com/jpschroeder/status/2100347770867458384) (TypeSafe AI's Jev model).
 
-![Gee-FunDriving](assets/logo-both.png)
+![GG-FunDriving](assets/logo-both.png)
 
 ![gameplay](docs/demo.png)
 
@@ -31,7 +31,7 @@ v·tan(delta)/wheelbase, sudut roda di-rate-limit) **+ batas genggam lateral
 0,55) **+ hambatan jalan** (rolling + drag kuadratik — mobil nyelesai sendiri
 tanpa gas) — belokan halus dan otomatis ikut skala kendaraan (bus radius
 putarnya lebar). Planner jalan di web worker. Live:
-**https://gee-fundriving.pages.dev**
+**https://gg-fundriving.pages.dev**
 
 Default mode **satu kendaraan** (challenge penyempurnaan mobil hero: lane
 keeping, tikungan, lampu merah). Mau mobil AI balik? `?traffic=1`.
@@ -95,7 +95,7 @@ Fitur map mode:
 - **Mode misi**: skor = rute terpendek ÷ rute ditempuh × 1000, −40/lampu merah, −25/tabrakan; selesai → auto misi baru
 - **Lalu lintas**: mobil AI random-walk di graf (lane kanan, jaga jarak, deteksi hero) + lampu lalu lintas siklus 7 detik, nyabrang merah kena denda
 - **Nama jalan** di dekat mobil, pathfinding A* di graf OSM
-- **Main menu**: `python fundriving.py` tanpa argumen → **START / SETTINGS / ABOUT / API KEY / EXIT** (API KEY buat tempel key TypeSafe langsung dari game — masking, tersimpan di `.env`). SETTINGS ngatur mode (assistant / kendali sendiri), peta (Loop City / sirkuit / OSM kalau ada), dan render FPS 30/60 — tersimpan di `~/gee-fundriving/settings.json`. ESC di game balik ke menu; windowed tanpa `--seconds` = main tanpa timer
+- **Main menu**: `python fundriving.py` tanpa argumen → **START / SETTINGS / ABOUT / API KEY / EXIT** (API KEY buat tempel key TypeSafe langsung dari game — masking, tersimpan di `.env`). SETTINGS ngatur mode (assistant / kendali sendiri), peta (Loop City / sirkuit / OSM kalau ada), dan render FPS 30/60 — tersimpan di `~/gg-fundriving/settings.json`. ESC di game balik ke menu; windowed tanpa `--seconds` = main tanpa timer
 - **Bisa dikendarai sendiri**: tekan `F` untuk lepas dari assistant dan kemudikan mobil pakai `WASD`/arrow (`W`/`↑` gas, `S`/`↓` rem, `A`/`D` belok — kemudi di-smooth biar gak jerk). Tekan `F` lagi buat balik ke autopilot. Mulai langsung dari kemudi: `--manual`. Di mode manual kamu yang nyabrang lampu merah (denda tetap masuk) dan nggak ada snap balik ke rute
 - **Kamera follow** + zoom `[-][=]`, `R` misi baru, `F` assistant ON/OFF, `ESC` keluar, FPS live di HUD; render 30fps (fisika tetap 60Hz), rekaman MP4 headless 30fps real-time
 

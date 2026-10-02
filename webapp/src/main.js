@@ -1,4 +1,4 @@
-// Gee-FunDriving Web — bootstrap ala jevpilot: loading screen, muat peta,
+// GG-FunDriving Web — bootstrap ala jevpilot: loading screen, muat peta,
 // sim 60fps fixed-step, HUD lengkap, manual (WASD/stick) atau otopilot (J).
 // Param URL: ?brain=v3  ?jev=https://...  ?traffic=1 (aktifkan mobil AI)
 

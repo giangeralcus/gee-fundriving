@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Fetch jalan + bangunan + area dari OpenStreetMap via Overpass API,
-konversi ke map format Gee-FunDriving.
+konversi ke map format GG-FunDriving.
 
 Pakai:
   python tools/fetch_osm.py                          # default: Puri Indah -> Cengkareng/Taman Palem
@@ -60,7 +60,7 @@ def fetch(query, timeout=300):
     last_err = None
     for i, url in enumerate(OVERPASS_ENDPOINTS):
         try:
-            req = urllib.request.Request(url, data=data, headers={"User-Agent": "GeeFunDriving/1.0"})
+            req = urllib.request.Request(url, data=data, headers={"User-Agent": "GGFunDriving/1.0"})
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.load(r)
         except Exception as e:

@@ -54,7 +54,7 @@ def main():
         print(f"=== {label} ===", file=sys.stderr)
         surf = pygame.Surface((W, H))
         clock = pygame.time.Clock()
-        out = os.path.expanduser("~/gee-fundriving")
+        out = os.path.expanduser("~/gg-fundriving")
         if IS_LOOP:
             r = fd.run_map(MAPFILE, True, args.seconds, surf, clock, out,
                            record=False, brain=args.brain)

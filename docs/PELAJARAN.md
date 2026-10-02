@@ -1,4 +1,4 @@
-# Catatan Pelajaran — Perjalanan Ngerjain Gee-FunDriving
+# Catatan Pelajaran — Perjalanan Ngerjain GG-FunDriving
 
 Dokumen ini nyatet pelajaran-pelajaran (bug, jebakan, pola) dari perjalanan
 ngerjain proyek: dari simulasi desktop jadi playable, sampai port ke web.

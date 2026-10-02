@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Gee-FunDriving — sim nyetir 2D top-down.
+GG-FunDriving — sim nyetir 2D top-down.
 
 MODE:
 1. Sirkuit (default)     : track oval, brain rule-based System-One loop.
@@ -16,7 +16,7 @@ MODE:
 
 Headless: rekam MP4 (butuh ffmpeg). Mulai langsung nyetir sendiri: --manual.
 Windowed tanpa argumen: main menu START / SETTINGS / ABOUT / EXIT — setelan
-(mode, peta, fps render, kecepatan) tersimpan di ~/gee-fundriving/settings.json;
+(mode, peta, fps render, kecepatan) tersimpan di ~/gg-fundriving/settings.json;
 ESC di game balik ke menu. --speed 1.25 = pengali kecepatan basis (CLI).
 """
 import json
@@ -34,7 +34,8 @@ W, H = 960, 540
 FPS = 60              # tick fisika simulasi (Hz) — semua konstanta tuning diikat ke sini
 RENDER_FPS = 30       # render + input + rekam video (fps)
 RENDER_EVERY = FPS // RENDER_FPS   # fisika jalan tiap tick, render tiap N tick
-SETTINGS_PATH = os.path.join(os.path.expanduser("~"), "gee-fundriving", "settings.json")
+SETTINGS_PATH = os.path.join(os.path.expanduser("~"), "gg-fundriving", "settings.json")
+SETTINGS_PATH_LEGACY = os.path.join(os.path.expanduser("~"), "gee-fundriving", "settings.json")
 SPEED_STEPS = (0.5, 0.75, 1.0, 1.25, 1.5)   # pengali kecepatan basis
 
 
@@ -1479,7 +1480,7 @@ def draw_map(surf, world, car, cam, state, dec, stats, traffic, signals, mission
         gx, gy = world.nodes[mission.goal]
         gdist = math.hypot(car.x - gx, car.y - gy)
     hud(surf, [
-        f"Gee-FunDriving | {world.meta['name']} | {dec.get('mode', '')}",
+        f"GG-FunDriving | {world.meta['name']} | {dec.get('mode', '')}",
         f"speed {car.speed:.1f}  alive {car.alive_time // FPS}s  wp {car.wp_i}/{len(car.route)}",
         f"he {dec.get('he', 0):.0f}  lat {dec.get('lat', 0):.0f}m  {dec.get('acc', '')} {name}".replace("  ", " "),
         f"misi #{mission.n + 1} -> {gdist:.0f}m | skor {mission.score} | merah {mission.reds} tabrak {mission.crashes}",
@@ -1730,7 +1731,7 @@ def run_map(mapfile, headless, seconds, surf, clock, outdir,
                 pygame.display.flip()
                 clock.tick(RENDER_FPS)
     if headless and record and shutil.which("ffmpeg"):
-        mp4 = os.path.join(outdir, "gee_fundriving_demo.mp4")
+        mp4 = os.path.join(outdir, "gg_fundriving_demo.mp4")
         # urutan gambar (%05d), bukan glob — build ffmpeg Windows gak dukung glob
         subprocess.run([
             "ffmpeg", "-y", "-loglevel", "error", "-f", "image2",
@@ -1787,9 +1788,12 @@ def run_circuit(headless, seconds, surf, clock, auto_start=True):
 
 
 def load_settings():
-    """Setelan tersimpan di ~/gee-fundriving/settings.json (mode, peta, fps render)."""
+    """Setelan tersimpan di ~/gg-fundriving/settings.json (mode, peta, fps render)."""
+    path = SETTINGS_PATH
+    if not os.path.exists(path) and os.path.exists(SETTINGS_PATH_LEGACY):
+        path = SETTINGS_PATH_LEGACY
     try:
-        with open(SETTINGS_PATH, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             s = json.load(f)
     except Exception:
         s = {}
@@ -1914,7 +1918,7 @@ def about_screen(surf, clock):
     big = pygame.font.SysFont("dejavusansbold", 40)
     font = pygame.font.SysFont("dejavusansmono", 16)
     lines = [
-        ("Gee-FunDriving", (240, 240, 240)),
+        ("GG-FunDriving", (240, 240, 240)),
         ("", None),
         ("Side hobby: simulasi buat ngarahin perkembangan", None),
         ("AI driving basics aja — dasar-dasar nyetir otonom:", None),
@@ -1945,7 +1949,7 @@ def about_screen(surf, clock):
         surf.fill((24, 26, 32))
         y = 40
         for txt, col in lines:
-            f = big if txt == "Gee-FunDriving" else font
+            f = big if txt == "GG-FunDriving" else font
             c = col if col else (200, 205, 215)
             surf.blit(f.render(txt, True, c), (120, y))
             y += 26 if f is font else 52
@@ -2057,7 +2061,7 @@ def main_menu(surf, clock, settings):
             surf.blit(logo, (W // 2 - logo.get_width() // 2, top))
             top += logo.get_height() + 14
         else:
-            t = big.render("Gee-FunDriving", True, (240, 240, 240))
+            t = big.render("GG-FunDriving", True, (240, 240, 240))
             surf.blit(t, (W // 2 - t.get_width() // 2, top))
             top += t.get_height() + 16
         y = top + 10
@@ -2110,7 +2114,7 @@ def main():
         goal_coord = (poi[b]["lat"], poi[b]["lon"])
         print(f"rute patokan: {poi[a].get('name', a)} -> {poi[b].get('name', b)}", file=sys.stderr)
 
-    outdir = os.path.expanduser("~/gee-fundriving")
+    outdir = os.path.expanduser("~/gg-fundriving")
     os.makedirs(outdir, exist_ok=True)
 
     if headless:
@@ -2118,7 +2122,7 @@ def main():
     pygame.init()
     if not headless:
         surf = pygame.display.set_mode((W, H))
-        pygame.display.set_caption("Gee-FunDriving")
+        pygame.display.set_caption("GG-FunDriving")
     else:
         surf = pygame.Surface((W, H))
     clock = pygame.time.Clock()
